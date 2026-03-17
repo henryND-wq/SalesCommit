@@ -1,0 +1,967 @@
+import React, { useState, useMemo, useEffect, useRef } from 'react';
+import { 
+  BarChart3, 
+  TrendingUp, 
+  GripHorizontal,
+  Filter,
+  TableProperties,
+  X,
+  Plus,
+  Info,
+  LayoutDashboard,
+  FileText,
+  CalendarDays,
+  Sparkles,
+  Mail,
+  Loader2,
+  Bot,
+  DollarSign,
+  Users,
+  AlertTriangle,
+  Target,
+  Upload,
+  RefreshCw,
+  ChevronDown,
+  ChevronUp,
+  Clock
+} from 'lucide-react';
+
+// --- GEMINI API INTEGRATION ---
+const apiKey = "";
+
+const callGeminiWithRetry = async (prompt, systemInstruction, retries = 5) => {
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`;
+  const payload = {
+    contents: [{ parts: [{ text: prompt }] }],
+    systemInstruction: { parts: [{ text: systemInstruction }] }
+  };
+
+  for (let i = 0; i < retries; i++) {
+    try {
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+      const data = await response.json();
+      return data.candidates?.[0]?.content?.parts?.[0]?.text || "No insights generated.";
+    } catch (error) {
+      if (i === retries - 1) throw error;
+      await new Promise(res => setTimeout(res, Math.pow(2, i) * 1000));
+    }
+  }
+};
+
+// --- DYNAMIC WORKING DAY LOGIC (12 PM HKT Rollover) ---
+const getTodayInfo = (workingDayMap = {}) => {
+  const hkTimeStr = new Date().toLocaleString("en-US", { timeZone: "Asia/Hong_Kong" });
+  const hkTime = new Date(hkTimeStr);
+  
+  const businessTime = new Date(hkTime);
+  const isBeforeNoon = hkTime.getHours() < 12;
+  
+  if (isBeforeNoon) {
+    businessTime.setDate(businessTime.getDate() - 1); 
+  }
+
+  const bizYyyy = businessTime.getFullYear();
+  const bizMm = String(businessTime.getMonth() + 1).padStart(2, '0');
+  const bizDd = String(businessTime.getDate()).padStart(2, '0');
+  
+  const displayDate = `${bizDd}/${bizMm}`;
+  const lookupDate = `${bizYyyy}-${bizMm}-${bizDd}`;
+
+  const workingDay = workingDayMap[lookupDate] || { mtd: '?', fullMonth: '?' };
+  
+  return { display: displayDate, workingDay, isBeforeNoon };
+};
+
+const parseWorkingDays = (csvText) => {
+  const lines = csvText.split('\n');
+  const map = {};
+  for (let i = 1; i < lines.length; i++) {
+    const line = lines[i].trim();
+    if (!line) continue;
+    const row = line.split(/,(?=(?:(?:[^"]*"){2})*[^"]*$)/);
+    if (row.length >= 3) {
+      let dateStr = row[0].replace(/"/g, '').trim();
+      dateStr = dateStr.split(' ')[0]; 
+      
+      const d = new Date(dateStr);
+      if (!isNaN(d.getTime())) {
+          const yyyy = d.getFullYear();
+          const mm = String(d.getMonth() + 1).padStart(2, '0');
+          const dd = String(d.getDate()).padStart(2, '0');
+          const formattedDate = `${yyyy}-${mm}-${dd}`;
+          
+          const mtd = parseInt(row[1].replace(/"/g, '').trim(), 10);
+          const fm = parseInt(row[2].replace(/"/g, '').trim(), 10);
+          map[formattedDate] = { mtd, fullMonth: fm };
+      }
+    }
+  }
+  return map;
+};
+
+// --- DATA CLEANING HELPERS ---
+const cleanNum = (val) => {
+  if (val === undefined || val === null) return 0;
+  const str = String(val).replace(/[^0-9.-]+/g, '');
+  const num = parseFloat(str);
+  return isNaN(num) ? 0 : num;
+};
+
+const isValidTherapistRow = (row) => {
+  const t = (row.therapist || '').toLowerCase().trim();
+  return t !== 'total' && t !== 'aggregate' && t !== '';
+};
+
+const getUniqueValues = (data, field) => {
+  return [...new Set(data.filter(isValidTherapistRow).map(d => d[field]))].filter(val => {
+    const v = (val || '').toLowerCase();
+    return v !== 'total' && v !== 'aggregate' && v !== 'all' && v !== 'other centers';
+  });
+};
+
+// --- ROBUST SALES CSV PARSER ---
+const parseCSV = (csvText) => {
+  const lines = [];
+  let currentLine = [];
+  let currentField = '';
+  let inQuotes = false;
+  
+  for (let i = 0; i < csvText.length; i++) {
+    const char = csvText[i];
+    const nextChar = csvText[i + 1];
+    
+    if (char === '"' && inQuotes && nextChar === '"') {
+      currentField += '"';
+      i++; 
+    } else if (char === '"') {
+      inQuotes = !inQuotes;
+    } else if (char === ',' && !inQuotes) {
+      currentLine.push(currentField.trim());
+      currentField = '';
+    } else if ((char === '\n' || char === '\r') && !inQuotes) {
+      if (char === '\r' && nextChar === '\n') i++; 
+      currentLine.push(currentField.trim());
+      lines.push(currentLine);
+      currentLine = [];
+      currentField = '';
+    } else {
+      currentField += char;
+    }
+  }
+  if (currentField || csvText[csvText.length - 1] === ',') {
+    currentLine.push(currentField.trim());
+  }
+  if (currentLine.length > 0) {
+    lines.push(currentLine);
+  }
+
+  const parsedData = [];
+  for (let i = 1; i < lines.length; i++) {
+    const row = lines[i];
+    if (row.length > 25) { 
+      parsedData.push({
+        id: i,
+        brand: (row[0] || '').replace(/"/g, '').trim(),
+        center: (row[2] || '').replace(/"/g, '').trim(),
+        therapist: (row[3] || '').replace(/"/g, '').trim(),
+        position: (row[5] || '').replace(/"/g, '').trim(),
+        
+        actualSalesMtd: cleanNum(row[7]),
+        mtdTarget: cleanNum(row[8]),
+        fmTarget: cleanNum(row[9]),
+        
+        t3Sales: cleanNum(row[16]),
+        t2Sales: cleanNum(row[19]),
+        t1Sales: cleanNum(row[22]),
+        todaySales: cleanNum(row[25]),
+      });
+    }
+  }
+  return parsedData;
+};
+
+// --- FIELD DEFINITIONS ---
+const REPORT_FIELDS = [
+  { id: 'brand', label: 'Brand', type: 'dimension', color: 'bg-indigo-100 text-indigo-700 border-indigo-200 hover:bg-indigo-200' },
+  { id: 'center', label: 'Center', type: 'dimension', color: 'bg-indigo-100 text-indigo-700 border-indigo-200 hover:bg-indigo-200' },
+  { id: 'position', label: 'Position', type: 'dimension', color: 'bg-indigo-100 text-indigo-700 border-indigo-200 hover:bg-indigo-200' },
+  { id: 'therapist', label: 'Therapist', type: 'dimension', color: 'bg-indigo-100 text-indigo-700 border-indigo-200 hover:bg-indigo-200' },
+  { id: 'actualSalesMtd', label: 'Actual Sales (MTD)', type: 'metric', format: 'currency', color: 'bg-emerald-100 text-emerald-700 border-emerald-200 hover:bg-emerald-200' },
+  { id: 'mtdTarget', label: 'MTD Target', type: 'metric', format: 'currency', color: 'bg-emerald-100 text-emerald-700 border-emerald-200 hover:bg-emerald-200' },
+  { id: 'fmTarget', label: 'Full Month Target', type: 'metric', format: 'currency', color: 'bg-emerald-100 text-emerald-700 border-emerald-200 hover:bg-emerald-200' },
+  { id: 'todaySales', label: 'Today Sales', type: 'metric', format: 'currency', color: 'bg-emerald-100 text-emerald-700 border-emerald-200 hover:bg-emerald-200' },
+  { id: 't1Sales', label: 'T-1 Sales', type: 'metric', format: 'currency', color: 'bg-emerald-100 text-emerald-700 border-emerald-200 hover:bg-emerald-200' },
+  { id: 't2Sales', label: 'T-2 Sales', type: 'metric', format: 'currency', color: 'bg-emerald-100 text-emerald-700 border-emerald-200 hover:bg-emerald-200' },
+  { id: 't3Sales', label: 'T-3 Sales', type: 'metric', format: 'currency', color: 'bg-emerald-100 text-emerald-700 border-emerald-200 hover:bg-emerald-200' },
+  { id: 'mtdPct', label: 'MTD %', type: 'metric', format: 'pct', color: 'bg-amber-100 text-amber-700 border-amber-200 hover:bg-amber-200' },
+  { id: 'fmSalesPct', label: 'Full Month Sales %', type: 'metric', format: 'pct', color: 'bg-amber-100 text-amber-700 border-amber-200 hover:bg-amber-200' },
+];
+
+const formatValue = (value, format) => {
+  if (value === undefined || value === null) return '-';
+  if (format === 'pct') return `${value.toFixed(2)}%`;
+  if (format === 'currency') return `$${value.toLocaleString(undefined, { maximumFractionDigits: 0 })}`;
+  return value;
+};
+
+// ------------------------------------------------------------------------------------
+// PAGE 1: SALES OVERVIEW COMPONENT
+// ------------------------------------------------------------------------------------
+function SalesOverview({ rawData, todayInfo }) {
+  const [kpiBrand, setKpiBrand] = useState('All');
+  const [kpiCenter, setKpiCenter] = useState('All');
+  const [kpiPosition, setKpiPosition] = useState('All');
+  const [kpiTherapist, setKpiTherapist] = useState('All');
+  
+  const [showExtraKpis, setShowExtraKpis] = useState(false); // Toggle state for T-1 metrics
+
+  const [consoleBrand, setConsoleBrand] = useState('All');
+  const [consoleCenter, setConsoleCenter] = useState('All');
+  const [consolePosition, setConsolePosition] = useState('All');
+  const [consoleTherapist, setConsoleTherapist] = useState('All');
+
+  const [consoleFields, setConsoleFields] = useState([]);
+  const [draggedItem, setDraggedItem] = useState(null); 
+  const [dragOverIndex, setDragOverIndex] = useState(null);
+
+  const [aiOutput, setAiOutput] = useState('');
+  const [aiOutputType, setAiOutputType] = useState(''); 
+  const [isGeneratingAi, setIsGeneratingAi] = useState(false);
+  const [aiError, setAiError] = useState('');
+
+  // --- KPI LOGIC ---
+  const kpiFilteredData = useMemo(() => {
+    return rawData.filter(row => {
+      if (!isValidTherapistRow(row)) return false; 
+      const matchBrand = kpiBrand === 'All' || row.brand === kpiBrand;
+      const matchCenter = kpiCenter === 'All' || row.center === kpiCenter;
+      const matchPosition = kpiPosition === 'All' || row.position === kpiPosition;
+      const matchTherapist = kpiTherapist === 'All' || row.therapist === kpiTherapist;
+      return matchBrand && matchCenter && matchPosition && matchTherapist;
+    });
+  }, [rawData, kpiBrand, kpiCenter, kpiPosition, kpiTherapist]);
+
+  const summary = useMemo(() => {
+    let totalMtdSales = 0, totalTodaySales = 0, totalT1Sales = 0, totalTarget = 0, totalFmTarget = 0;
+    
+    // Sum Sales Granularly 
+    kpiFilteredData.forEach(row => {
+      totalMtdSales += row.actualSalesMtd || 0;
+      totalTodaySales += row.todaySales || 0;
+      totalT1Sales += row.t1Sales || 0;
+    });
+
+    const isKpiFilteredBySubLevel = kpiPosition !== 'All' || kpiTherapist !== 'All';
+
+    // Fetch official Total row Target depending on explicit filtering depth
+    let sourceRow = null;
+    if (!isKpiFilteredBySubLevel) {
+        if (kpiCenter !== 'All') {
+            sourceRow = rawData.find(r => r.center.toLowerCase() === kpiCenter.toLowerCase() && r.therapist.toLowerCase() === 'total');
+        } else if (kpiBrand !== 'All') {
+            sourceRow = rawData.find(r => r.brand.toLowerCase() === kpiBrand.toLowerCase() && r.center.toLowerCase() === 'total' && r.therapist.toLowerCase() === 'total');
+        }
+    }
+
+    if (sourceRow) {
+        totalTarget = sourceRow.mtdTarget;
+        totalFmTarget = sourceRow.fmTarget;
+    } else if (!isKpiFilteredBySubLevel && kpiBrand === 'All' && kpiCenter === 'All') {
+        const brandTotalRows = rawData.filter(r => r.center.toLowerCase() === 'total' && r.therapist.toLowerCase() === 'total' && r.brand && !r.brand.toLowerCase().includes('total'));
+        if (brandTotalRows.length > 0) {
+            totalTarget = brandTotalRows.reduce((s, r) => s + r.mtdTarget, 0);
+            totalFmTarget = brandTotalRows.reduce((s, r) => s + r.fmTarget, 0);
+        } else {
+            totalTarget = kpiFilteredData.reduce((s, r) => s + r.mtdTarget, 0);
+            totalFmTarget = kpiFilteredData.reduce((s, r) => s + r.fmTarget, 0);
+        }
+    } else {
+        totalTarget = kpiFilteredData.reduce((s, r) => s + r.mtdTarget, 0);
+        totalFmTarget = kpiFilteredData.reduce((s, r) => s + r.fmTarget, 0);
+    }
+
+    return {
+      totalMtdSales,
+      totalTodaySales,
+      totalT1Sales,
+      totalTarget,
+      totalFmTarget,
+      mtdPct: totalTarget > 0 ? (totalMtdSales / totalTarget) * 100 : 0, 
+      fmSalesPct: totalFmTarget > 0 ? (totalMtdSales / totalFmTarget) * 100 : 0,
+      headcount: kpiFilteredData.length 
+    };
+  }, [kpiFilteredData, rawData, kpiBrand, kpiCenter, kpiPosition, kpiTherapist]);
+
+  // Derived T-1 Metrics
+  const mtdDay = todayInfo?.workingDay?.mtd !== '?' ? Number(todayInfo?.workingDay?.mtd) : 1;
+  const fmDay = todayInfo?.workingDay?.fullMonth !== '?' ? Number(todayInfo?.workingDay?.fullMonth) : 1;
+  
+  // T-1 Target resolves hierarchy perfectly because it relies on `summary.totalFmTarget`
+  const t1Target = (summary.totalFmTarget / fmDay) * Math.max(0, mtdDay - 1);
+  const t1MtdSales = summary.totalMtdSales - summary.totalT1Sales;
+  const t1MtdPct = t1Target > 0 ? (t1MtdSales / t1Target) * 100 : 0;
+
+  // --- CONSOLE LOGIC ---
+  const consoleFilteredData = useMemo(() => {
+    return rawData.filter(row => {
+      if (!isValidTherapistRow(row)) return false; 
+      const matchBrand = consoleBrand === 'All' || row.brand === consoleBrand;
+      const matchCenter = consoleCenter === 'All' || row.center === consoleCenter;
+      const matchPosition = consolePosition === 'All' || row.position === consolePosition;
+      const matchTherapist = consoleTherapist === 'All' || row.therapist === consoleTherapist;
+      return matchBrand && matchCenter && matchPosition && matchTherapist;
+    });
+  }, [rawData, consoleBrand, consoleCenter, consolePosition, consoleTherapist]);
+
+  const activeDimensions = consoleFields.filter(f => f.type === 'dimension');
+
+  const groupedConsoleData = useMemo(() => {
+    if (consoleFields.length === 0) return [];
+    const map = new Map();
+
+    consoleFilteredData.forEach(row => {
+      const key = activeDimensions.length > 0 ? activeDimensions.map(d => row[d.id]).join(' | ') : 'Grand Total';
+
+      if (!map.has(key)) {
+        const initialGroup = { id: key };
+        activeDimensions.forEach(d => { initialGroup[d.id] = row[d.id] });
+        initialGroup._actualSalesMtd = row.actualSalesMtd || 0;
+        initialGroup._mtdTarget = row.mtdTarget || 0;
+        initialGroup._fmTarget = row.fmTarget || 0;
+        initialGroup._todaySales = row.todaySales || 0;
+        initialGroup._t1Sales = row.t1Sales || 0;
+        initialGroup._t2Sales = row.t2Sales || 0;
+        initialGroup._t3Sales = row.t3Sales || 0;
+        map.set(key, initialGroup);
+      } else {
+        const group = map.get(key);
+        group._actualSalesMtd += row.actualSalesMtd || 0;
+        group._mtdTarget += row.mtdTarget || 0;
+        group._fmTarget += row.fmTarget || 0;
+        group._todaySales += row.todaySales || 0;
+        group._t1Sales += row.t1Sales || 0;
+        group._t2Sales += row.t2Sales || 0;
+        group._t3Sales += row.t3Sales || 0;
+      }
+    });
+
+    return Array.from(map.values()).map(group => {
+      const hasTherapist = activeDimensions.some(d => d.id === 'therapist');
+      const hasPosition = activeDimensions.some(d => d.id === 'position');
+      const hasCenter = activeDimensions.some(d => d.id === 'center');
+      const hasBrand = activeDimensions.some(d => d.id === 'brand');
+
+      const isFilteredBySubLevel = consolePosition !== 'All' || consoleTherapist !== 'All';
+      const isFilteredByCenter = consoleCenter !== 'All';
+
+      let sourceRow = null;
+
+      if (!hasTherapist && !hasPosition && !isFilteredBySubLevel) {
+          if (hasCenter) {
+              sourceRow = rawData.find(r => r.center.toLowerCase() === group.center.toLowerCase() && r.therapist.toLowerCase() === 'total');
+          } else if (hasBrand) {
+              if (isFilteredByCenter) {
+                  sourceRow = rawData.find(r => r.center.toLowerCase() === consoleCenter.toLowerCase() && r.therapist.toLowerCase() === 'total');
+              } else {
+                  sourceRow = rawData.find(r => r.brand.toLowerCase() === group.brand.toLowerCase() && r.center.toLowerCase() === 'total' && r.therapist.toLowerCase() === 'total');
+              }
+          } else {
+              if (isFilteredByCenter) {
+                  sourceRow = rawData.find(r => r.center.toLowerCase() === consoleCenter.toLowerCase() && r.therapist.toLowerCase() === 'total');
+              } else if (consoleBrand !== 'All') {
+                  sourceRow = rawData.find(r => r.brand.toLowerCase() === consoleBrand.toLowerCase() && r.center.toLowerCase() === 'total' && r.therapist.toLowerCase() === 'total');
+              }
+          }
+      }
+
+      let finalSalesMtd = group._actualSalesMtd;
+      let finalTodaySales = group._todaySales;
+      let finalT1Sales = group._t1Sales;
+      let finalT2Sales = group._t2Sales;
+      let finalT3Sales = group._t3Sales;
+
+      let finalMtdTarget = sourceRow ? sourceRow.mtdTarget : group._mtdTarget;
+      let finalFmTarget = sourceRow ? sourceRow.fmTarget : group._fmTarget;
+      
+      if (!sourceRow && !hasTherapist && !hasPosition && !hasCenter && !hasBrand && !isFilteredBySubLevel) {
+          const brandTotalRows = rawData.filter(r => r.center.toLowerCase() === 'total' && r.therapist.toLowerCase() === 'total' && r.brand && !r.brand.toLowerCase().includes('total'));
+          if (brandTotalRows.length > 0) {
+              finalMtdTarget = brandTotalRows.reduce((s, r) => s + r.mtdTarget, 0);
+              finalFmTarget = brandTotalRows.reduce((s, r) => s + r.fmTarget, 0);
+          }
+      }
+
+      group.actualSalesMtd = finalSalesMtd;
+      group.mtdTarget = finalMtdTarget;
+      group.fmTarget = finalFmTarget;
+      group.todaySales = finalTodaySales;
+      group.t1Sales = finalT1Sales;
+      group.t2Sales = finalT2Sales;
+      group.t3Sales = finalT3Sales;
+      
+      group.mtdPct = finalMtdTarget > 0 ? (finalSalesMtd / finalMtdTarget) * 100 : 0;
+      group.fmSalesPct = finalFmTarget > 0 ? (finalSalesMtd / finalFmTarget) * 100 : 0;
+      
+      return group;
+    });
+  }, [consoleFilteredData, consoleFields, activeDimensions, rawData, consoleBrand, consoleCenter, consolePosition, consoleTherapist]);
+
+  const kpiAvailableCenters = useMemo(() => getUniqueValues(rawData.filter(d => kpiBrand === 'All' || d.brand === kpiBrand), 'center'), [rawData, kpiBrand]);
+  const kpiAvailablePositions = useMemo(() => getUniqueValues(rawData.filter(d => (kpiBrand === 'All' || d.brand === kpiBrand) && (kpiCenter === 'All' || d.center === kpiCenter)), 'position'), [rawData, kpiBrand, kpiCenter]);
+  const kpiAvailableTherapists = useMemo(() => getUniqueValues(rawData.filter(d => (kpiBrand === 'All' || d.brand === kpiBrand) && (kpiCenter === 'All' || d.center === kpiCenter) && (kpiPosition === 'All' || d.position === kpiPosition)), 'therapist'), [rawData, kpiBrand, kpiCenter, kpiPosition]);
+
+  const consoleAvailableCenters = useMemo(() => getUniqueValues(rawData.filter(d => consoleBrand === 'All' || d.brand === consoleBrand), 'center'), [rawData, consoleBrand]);
+  const consoleAvailablePositions = useMemo(() => getUniqueValues(rawData.filter(d => (consoleBrand === 'All' || d.brand === consoleBrand) && (consoleCenter === 'All' || d.center === consoleCenter)), 'position'), [rawData, consoleBrand, consoleCenter]);
+  const consoleAvailableTherapists = useMemo(() => getUniqueValues(rawData.filter(d => (consoleBrand === 'All' || d.brand === consoleBrand) && (consoleCenter === 'All' || d.center === consoleCenter) && (consolePosition === 'All' || d.position === consolePosition)), 'therapist'), [rawData, consoleBrand, consoleCenter, consolePosition]);
+
+  const handleGenerateAI = async (type) => {
+    setIsGeneratingAi(true); setAiError(''); setAiOutput(''); setAiOutputType(type);
+    const tableDataString = groupedConsoleData.map(row => {
+      return consoleFields.map(f => `${f.label}: ${f.type === 'metric' ? formatValue(row[f.id], f.format) : row[f.id]}`).join(' | ');
+    }).join('\n');
+    const systemPrompt = "You are an expert sales performance director. Analyze data precisely and offer actionable business insights.";
+    let userPrompt = type === 'insights' 
+      ? `Analyze the following real-time sales dashboard report:\n\n${tableDataString}\n\nProvide 3 concise, highly actionable bullet points highlighting top performers, alarming trends, and a strategic recommendation based purely on this data.`
+      : `Based on the following sales data report:\n\n${tableDataString}\n\nDraft a short, motivating internal email to the sales team shown. Acknowledge top performers explicitly, encourage those lagging gently. Sign off as 'Sales Management'.`;
+
+    try {
+      const responseText = await callGeminiWithRetry(userPrompt, systemPrompt);
+      setAiOutput(responseText);
+    } catch (err) { setAiError('Failed to generate AI insights.'); } 
+    finally { setIsGeneratingAi(false); }
+  };
+
+  const handleDragStart = (e, field, sourceIndex) => {
+    setDraggedItem({ field, sourceIndex });
+    e.dataTransfer.effectAllowed = 'move';
+    setTimeout(() => { e.target.classList.add('opacity-40'); }, 0);
+  };
+  const handleDragEnd = (e) => { e.target.classList.remove('opacity-40'); setDraggedItem(null); setDragOverIndex(null); };
+  const handleDragOverArea = (e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; };
+  const handleDragOverItem = (e, index) => {
+    e.preventDefault(); e.stopPropagation(); e.dataTransfer.dropEffect = 'move';
+    if (draggedItem?.sourceIndex !== index) setDragOverIndex(index);
+  };
+  const handleDropArea = (e) => {
+    e.preventDefault(); if (!draggedItem) return;
+    let newFields = [...consoleFields];
+    if (draggedItem.sourceIndex === null) {
+      if (!newFields.find(f => f.id === draggedItem.field.id)) newFields.push(draggedItem.field);
+    } else {
+      const [removed] = newFields.splice(draggedItem.sourceIndex, 1);
+      newFields.push(removed);
+    }
+    setConsoleFields(newFields); setDraggedItem(null); setDragOverIndex(null);
+  };
+  const handleDropItem = (e, targetIndex) => {
+    e.preventDefault(); e.stopPropagation(); if (!draggedItem) return;
+    let newFields = [...consoleFields];
+    if (draggedItem.sourceIndex === null) {
+      if (!newFields.find(f => f.id === draggedItem.field.id)) newFields.splice(targetIndex, 0, draggedItem.field);
+    } else {
+      const sourceIndex = draggedItem.sourceIndex;
+      if (sourceIndex === targetIndex) return;
+      const [removed] = newFields.splice(sourceIndex, 1);
+      const adjustedIndex = sourceIndex < targetIndex ? targetIndex - 1 : targetIndex;
+      newFields.splice(adjustedIndex, 0, removed);
+    }
+    setConsoleFields(newFields); setDraggedItem(null); setDragOverIndex(null);
+  };
+  const removeField = (fieldId) => { setConsoleFields(consoleFields.filter(f => f.id !== fieldId)); };
+  const isTherapistInConsole = consoleFields.some(f => f.id === 'therapist');
+
+  return (
+    <div className="space-y-6 animate-in fade-in duration-300">
+      
+      {/* 1. KPI SECTION */}
+      <section className="bg-white rounded-xl shadow-sm border border-slate-200 p-5 transition-all">
+        <div className="flex items-center justify-between mb-4">
+          <div className="flex items-center gap-2 text-slate-700 font-semibold">
+            <Filter className="w-4 h-4 text-blue-500" />
+            <h2>KPI Dashboard Filters</h2>
+          </div>
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6 border-b border-slate-100 pb-6">
+          <select className="bg-slate-50 border border-slate-200 rounded-lg px-3 py-2.5 outline-none focus:ring-2 focus:ring-blue-500" value={kpiBrand} onChange={(e) => { setKpiBrand(e.target.value); setKpiCenter('All'); setKpiPosition('All'); setKpiTherapist('All'); }}>
+            <option value="All">All Brands</option>
+            {getUniqueValues(rawData, 'brand').map(b => <option key={b} value={b} className="capitalize">{b}</option>)}
+          </select>
+          <select className="bg-slate-50 border border-slate-200 rounded-lg px-3 py-2.5 outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50" value={kpiCenter} onChange={(e) => { setKpiCenter(e.target.value); setKpiPosition('All'); setKpiTherapist('All'); }} disabled={kpiAvailableCenters.length === 0}>
+            <option value="All">All Centers</option>
+            {kpiAvailableCenters.map(f => <option key={f} value={f}>{f}</option>)}
+          </select>
+          <select className="bg-slate-50 border border-slate-200 rounded-lg px-3 py-2.5 outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50" value={kpiPosition} onChange={(e) => { setKpiPosition(e.target.value); setKpiTherapist('All'); }} disabled={kpiAvailablePositions.length === 0}>
+            <option value="All">All Positions</option>
+            {kpiAvailablePositions.map(t => <option key={t} value={t}>{t}</option>)}
+          </select>
+          <select className="bg-slate-50 border border-slate-200 rounded-lg px-3 py-2.5 outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50" value={kpiTherapist} onChange={(e) => setKpiTherapist(e.target.value)} disabled={kpiAvailableTherapists.length === 0}>
+            <option value="All">All Therapists</option>
+            {kpiAvailableTherapists.map(t => <option key={t} value={t}>{t}</option>)}
+          </select>
+        </div>
+
+        {/* Primary 6 KPIs */}
+        <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-6 gap-4">
+          <div className="bg-slate-50 rounded-xl p-4 border border-slate-100 flex flex-col gap-2">
+            <div className="flex items-center gap-2"><DollarSign className="w-5 h-5 text-emerald-600" /><p className="text-xs text-slate-500 font-bold uppercase tracking-wider">Today Sales</p></div>
+            <h3 className="text-2xl font-bold text-slate-800">{formatValue(summary.totalTodaySales, 'currency')}</h3>
+          </div>
+          <div className="bg-slate-50 rounded-xl p-4 border border-slate-100 flex flex-col gap-2">
+            <div className="flex items-center gap-2"><DollarSign className="w-5 h-5 text-emerald-600" /><p className="text-xs text-slate-500 font-bold uppercase tracking-wider">MTD Sales</p></div>
+            <h3 className="text-2xl font-bold text-slate-800">{formatValue(summary.totalMtdSales, 'currency')}</h3>
+          </div>
+          <div className="bg-slate-50 rounded-xl p-4 border border-slate-100 flex flex-col gap-2">
+            <div className="flex items-center gap-2"><Target className="w-5 h-5 text-blue-600" /><p className="text-xs text-slate-500 font-bold uppercase tracking-wider">MTD Target</p></div>
+            <h3 className="text-2xl font-bold text-slate-800">{formatValue(summary.totalTarget, 'currency')}</h3>
+          </div>
+          <div className="bg-slate-50 rounded-xl p-4 border border-slate-100 flex flex-col gap-2">
+            <div className="flex items-center gap-2"><TrendingUp className="w-5 h-5 text-amber-600" /><p className="text-xs text-slate-500 font-bold uppercase tracking-wider">MTD %</p></div>
+            <h3 className="text-2xl font-bold text-slate-800">{formatValue(summary.mtdPct, 'pct')}</h3>
+          </div>
+          <div className="bg-slate-50 rounded-xl p-4 border border-slate-100 flex flex-col gap-2">
+            <div className="flex items-center gap-2"><Target className="w-5 h-5 text-amber-600" /><p className="text-xs text-slate-500 font-bold uppercase tracking-wider">Full Month %</p></div>
+            <h3 className="text-2xl font-bold text-slate-800">{formatValue(summary.fmSalesPct, 'pct')}</h3>
+          </div>
+          <div className="bg-slate-50 rounded-xl p-4 border border-slate-100 flex flex-col gap-2">
+            <div className="flex items-center gap-2"><Users className="w-5 h-5 text-indigo-600" /><p className="text-xs text-slate-500 font-bold uppercase tracking-wider">Active HC</p></div>
+            <h3 className="text-2xl font-bold text-slate-800">{summary.headcount}</h3>
+          </div>
+        </div>
+
+        {/* Expandable T-1 KPIs */}
+        <div className="mt-4 border-t border-slate-100 pt-4">
+          <button 
+            onClick={() => setShowExtraKpis(!showExtraKpis)} 
+            className="flex items-center gap-1.5 text-sm font-semibold text-blue-600 hover:text-blue-700 transition-colors mx-auto"
+          >
+            {showExtraKpis ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+            {showExtraKpis ? 'Hide T-1 Performance' : 'Expand T-1 Performance'}
+          </button>
+          
+          {showExtraKpis && (
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mt-4 animate-in fade-in slide-in-from-top-2 duration-300">
+              <div className="bg-slate-50 rounded-xl p-4 border border-slate-100 flex flex-col gap-2">
+                <div className="flex items-center gap-2"><DollarSign className="w-5 h-5 text-purple-600" /><p className="text-xs text-slate-500 font-bold uppercase tracking-wider">T-1 Sales</p></div>
+                <h3 className="text-2xl font-bold text-slate-800">{formatValue(summary.totalT1Sales, 'currency')}</h3>
+              </div>
+              <div className="bg-slate-50 rounded-xl p-4 border border-slate-100 flex flex-col gap-2">
+                <div className="flex items-center gap-2"><TrendingUp className="w-5 h-5 text-purple-600" /><p className="text-xs text-slate-500 font-bold uppercase tracking-wider">T-1 MTD Sales</p></div>
+                <h3 className="text-2xl font-bold text-slate-800">{formatValue(t1MtdSales, 'currency')}</h3>
+              </div>
+              <div className="bg-slate-50 rounded-xl p-4 border border-slate-100 flex flex-col gap-2">
+                <div className="flex items-center gap-2"><Target className="w-5 h-5 text-purple-600" /><p className="text-xs text-slate-500 font-bold uppercase tracking-wider">T-1 MTD %</p></div>
+                <h3 className="text-2xl font-bold text-slate-800">{formatValue(t1MtdPct, 'pct')}</h3>
+              </div>
+            </div>
+          )}
+        </div>
+      </section>
+
+      {/* 2. DYNAMIC CONSOLE SECTION */}
+      <section className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
+        
+        <div className="p-5 border-b border-slate-200 bg-slate-50">
+          <div className="flex items-center gap-2 mb-4 text-slate-700 font-semibold">
+            <Filter className="w-4 h-4 text-indigo-500" />
+            <h2>Console Data Filters</h2>
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+            <select className="bg-white border border-slate-200 rounded-lg px-3 py-2.5 outline-none focus:ring-2 focus:ring-indigo-500 shadow-sm" value={consoleBrand} onChange={(e) => { setConsoleBrand(e.target.value); setConsoleCenter('All'); setConsolePosition('All'); setConsoleTherapist('All'); }}>
+              <option value="All">All Brands</option>
+              {getUniqueValues(rawData, 'brand').map(b => <option key={b} value={b} className="capitalize">{b}</option>)}
+            </select>
+            <select className="bg-white border border-slate-200 rounded-lg px-3 py-2.5 outline-none focus:ring-2 focus:ring-indigo-500 shadow-sm disabled:opacity-50" value={consoleCenter} onChange={(e) => { setConsoleCenter(e.target.value); setConsolePosition('All'); setConsoleTherapist('All'); }} disabled={consoleAvailableCenters.length === 0}>
+              <option value="All">All Centers</option>
+              {consoleAvailableCenters.map(f => <option key={f} value={f}>{f}</option>)}
+            </select>
+            <select className="bg-white border border-slate-200 rounded-lg px-3 py-2.5 outline-none focus:ring-2 focus:ring-indigo-500 shadow-sm disabled:opacity-50" value={consolePosition} onChange={(e) => { setConsolePosition(e.target.value); setConsoleTherapist('All'); }} disabled={consoleAvailablePositions.length === 0}>
+              <option value="All">All Positions</option>
+              {consoleAvailablePositions.map(t => <option key={t} value={t}>{t}</option>)}
+            </select>
+            <select className="bg-white border border-slate-200 rounded-lg px-3 py-2.5 outline-none focus:ring-2 focus:ring-indigo-500 shadow-sm disabled:opacity-50" value={consoleTherapist} onChange={(e) => setConsoleTherapist(e.target.value)} disabled={consoleAvailableTherapists.length === 0}>
+              <option value="All">All Therapists</option>
+              {consoleAvailableTherapists.map(t => <option key={t} value={t}>{t}</option>)}
+            </select>
+          </div>
+        </div>
+
+        <div className="p-5 border-b border-slate-200">
+          <div className="flex items-center justify-between mb-4">
+            <div className="flex items-center gap-2">
+              <TableProperties className="w-5 h-5 text-indigo-600" />
+              <h2 className="text-lg font-bold text-slate-800">Dynamic Console (Drag, Drop & Reorder)</h2>
+            </div>
+            {consoleFields.length > 0 && (
+              <div className="flex items-center gap-2">
+                <button onClick={() => handleGenerateAI('insights')} disabled={isGeneratingAi} className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-lg bg-gradient-to-r from-purple-600 to-indigo-600 text-white hover:from-purple-700 hover:to-indigo-700 shadow-sm transition-all disabled:opacity-50">
+                  {isGeneratingAi && aiOutputType === 'insights' ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />} ✨ AI Insights
+                </button>
+                <button onClick={() => handleGenerateAI('email')} disabled={isGeneratingAi} className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-lg bg-white border border-slate-200 text-slate-700 hover:bg-slate-50 shadow-sm transition-all disabled:opacity-50">
+                  {isGeneratingAi && aiOutputType === 'email' ? <Loader2 className="w-4 h-4 animate-spin text-indigo-600" /> : <Mail className="w-4 h-4 text-indigo-600" />} ✨ Draft Email
+                </button>
+              </div>
+            )}
+          </div>
+          
+          <div className="mb-4">
+            <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2">Available Fields</p>
+            <div className="flex flex-wrap gap-2 min-h-[40px]">
+              {REPORT_FIELDS.filter(f => !consoleFields.find(cf => cf.id === f.id)).map(field => {
+                const isPositionDisabled = field.id === 'position' && !isTherapistInConsole;
+                return (
+                  <div
+                    key={field.id} draggable={!isPositionDisabled} onDragStart={(e) => { if(!isPositionDisabled) handleDragStart(e, field, null); }} onDragEnd={handleDragEnd}
+                    className={`px-3 py-1.5 rounded-full text-sm font-medium border shadow-sm transition-transform 
+                      ${isPositionDisabled ? 'opacity-40 cursor-not-allowed bg-slate-200 border-slate-300 text-slate-500' : `cursor-grab active:cursor-grabbing hover:-translate-y-0.5 ${field.color}`}`}
+                    title={isPositionDisabled ? "Please drag 'Therapist' to the console first" : ""}
+                  >
+                    <div className="flex items-center gap-1.5"><GripHorizontal className="w-3.5 h-3.5 opacity-50" />{field.label}</div>
+                  </div>
+                )
+              })}
+            </div>
+          </div>
+           
+           <div onDragOver={handleDragOverArea} onDrop={handleDropArea} className={`min-h-[80px] rounded-xl border-2 transition-colors flex flex-wrap items-center gap-2 p-4 ${consoleFields.length === 0 ? 'border-dashed border-slate-300 bg-slate-50 justify-center' : 'border-dashed border-indigo-200 bg-indigo-50/30'}`}>
+             {consoleFields.length === 0 ? (
+               <div className="text-center text-slate-400 flex flex-col items-center pointer-events-none">
+                 <Plus className="w-6 h-6 mb-1 opacity-50" />
+                 <p className="text-sm">Drag Dimensions and Metrics here. Drag to reorder.</p>
+               </div>
+             ) : (
+               consoleFields.map((field, idx) => (
+                 <div 
+                   key={field.id} draggable onDragStart={(e) => handleDragStart(e, field, idx)} onDragOver={(e) => handleDragOverItem(e, idx)} onDrop={(e) => handleDropItem(e, idx)} onDragEnd={handleDragEnd}
+                   className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-sm font-medium border shadow-sm cursor-grab active:cursor-grabbing transition-all duration-200
+                     ${field.color} ${dragOverIndex === idx ? 'ml-6 ring-4 ring-indigo-300 ring-offset-1 scale-105' : ''}`}
+                 >
+                   <GripHorizontal className="w-3.5 h-3.5 opacity-50" />{field.label}
+                   <button onClick={() => removeField(field.id)} className="ml-1 p-0.5 hover:bg-black/10 rounded-full transition-colors"><X className="w-3.5 h-3.5" /></button>
+                 </div>
+               ))
+             )}
+           </div>
+        </div>
+
+        {(isGeneratingAi || aiOutput || aiError) && (
+          <div className="border-b border-slate-200 bg-gradient-to-br from-indigo-50 to-purple-50 p-6 relative overflow-hidden">
+            <div className="absolute top-0 left-0 w-1 h-full bg-gradient-to-b from-purple-500 to-indigo-500" />
+            <div className="flex items-center gap-2 mb-3">
+              <Bot className="w-5 h-5 text-indigo-600" />
+              <h3 className="text-sm font-bold text-indigo-900 uppercase tracking-wider">{aiOutputType === 'insights' ? 'AI Executive Insights' : 'AI Motivation Email Draft'}</h3>
+            </div>
+            {isGeneratingAi && (
+              <div className="flex items-center gap-3 text-indigo-600 py-4"><Loader2 className="w-5 h-5 animate-spin" /><span className="text-sm font-medium">Analyzing current view & generating response with Gemini...</span></div>
+            )}
+            {aiError && <p className="text-sm text-red-600 font-medium">{aiError}</p>}
+            {aiOutput && !isGeneratingAi && <div className="text-sm text-slate-800 leading-relaxed whitespace-pre-wrap">{aiOutput}</div>}
+          </div>
+        )}
+
+        <div className="overflow-x-auto">
+          {consoleFields.length > 0 ? (
+            <table className="w-full text-left text-sm text-slate-600">
+              <thead className="bg-slate-100 text-slate-600 uppercase text-xs font-semibold border-b border-slate-200">
+                <tr>{consoleFields.map(field => <th key={field.id} className="px-5 py-4 whitespace-nowrap">{field.label}</th>)}</tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {groupedConsoleData.length > 0 ? groupedConsoleData.map((row, idx) => (
+                  <tr key={idx} className="hover:bg-slate-50 transition-colors">
+                    {consoleFields.map(field => (
+                      <td key={field.id} className={`px-5 py-3 ${field.type === 'metric' ? 'font-medium text-slate-800' : ''}`}>
+                        {field.type === 'dimension' ? (row[field.id] || '-') : formatValue(row[field.id], field.format)}
+                      </td>
+                    ))}
+                  </tr>
+                )) : (
+                  <tr><td colSpan={consoleFields.length} className="px-5 py-8 text-center text-slate-500">No data found for current filters.</td></tr>
+                )}
+              </tbody>
+            </table>
+          ) : (
+            <div className="px-5 py-12 text-center text-slate-400 bg-slate-50/50">Table preview will appear here once fields are added to the console.</div>
+          )}
+        </div>
+      </section>
+    </div>
+  );
+}
+
+// ------------------------------------------------------------------------------------
+// PAGE 2: CAT 1/2 COMPONENT (Defect Dashboard)
+// ------------------------------------------------------------------------------------
+function Cat12Overview({ rawData }) {
+  const [filterBrand, setFilterBrand] = useState('All');
+  const [filterCenter, setFilterCenter] = useState('All');
+
+  const catFilteredData = useMemo(() => {
+    return rawData.filter(row => {
+      if (!isValidTherapistRow(row)) return false;
+      const matchBrand = filterBrand === 'All' || row.brand === filterBrand;
+      const matchCenter = filterCenter === 'All' || row.center === filterCenter;
+      return matchBrand && matchCenter;
+    });
+  }, [rawData, filterBrand, filterCenter]);
+
+  const catAvailableCenters = useMemo(() => getUniqueValues(rawData.filter(d => filterBrand === 'All' || d.brand === filterBrand), 'center'), [rawData, filterBrand]);
+
+  const centerStats = useMemo(() => {
+    const map = new Map();
+    catFilteredData.forEach(row => {
+      if (!map.has(row.center)) map.set(row.center, { center: row.center, therapists: [], totalSales: 0, totalTarget: 0 });
+      const group = map.get(row.center);
+      group.therapists.push(row);
+      group.totalSales += row.actualSalesMtd || 0;
+      group.totalTarget += row.mtdTarget || 0;
+    });
+
+    return Array.from(map.values()).map(group => {
+      let defectCount = 0;
+      group.therapists.forEach(t => {
+        const mtdPct = t.mtdTarget > 0 ? (t.actualSalesMtd / t.mtdTarget) * 100 : 0;
+        if (mtdPct < 100) defectCount++; 
+      });
+      const hc = group.therapists.length;
+      
+      const centerTotalRow = rawData.find(r => r.center.toLowerCase() === group.center.toLowerCase() && r.therapist.toLowerCase() === 'total');
+      const finalTarget = centerTotalRow ? centerTotalRow.mtdTarget : group.totalTarget;
+      const finalSales = group.totalSales; 
+
+      return {
+        center: group.center,
+        hc: hc,
+        defectHc: defectCount,
+        defectPct: hc > 0 ? (defectCount / hc) * 100 : 0,
+        totalSales: finalSales,
+        totalTarget: finalTarget,
+        groupMtdPct: finalTarget > 0 ? (finalSales / finalTarget) * 100 : 0,
+      };
+    }).sort((a, b) => b.defectHc - a.defectHc); 
+  }, [catFilteredData, rawData]);
+
+  const globalHc = centerStats.reduce((sum, c) => sum + c.hc, 0);
+  const globalDefectHc = centerStats.reduce((sum, c) => sum + c.defectHc, 0);
+  const globalDefectRate = globalHc > 0 ? (globalDefectHc / globalHc) * 100 : 0;
+
+  return (
+    <div className="space-y-6 animate-in fade-in duration-300">
+      
+      <section className="bg-white rounded-xl shadow-sm border border-slate-200 p-5">
+        <div className="flex items-center gap-2 mb-4 text-slate-700 font-semibold">
+          <Filter className="w-4 h-4 text-orange-500" />
+          <h2>Defect Analysis Filters</h2>
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <select className="bg-slate-50 border border-slate-200 rounded-lg px-3 py-2.5 outline-none focus:ring-2 focus:ring-orange-500" value={filterBrand} onChange={(e) => { setFilterBrand(e.target.value); setFilterCenter('All'); }}>
+            <option value="All">All Brands</option>
+            {getUniqueValues(rawData, 'brand').map(b => <option key={b} value={b} className="capitalize">{b}</option>)}
+          </select>
+          <select className="bg-slate-50 border border-slate-200 rounded-lg px-3 py-2.5 outline-none focus:ring-2 focus:ring-orange-500 disabled:opacity-50" value={filterCenter} onChange={(e) => setFilterCenter(e.target.value)} disabled={catAvailableCenters.length === 0}>
+            <option value="All">All Centers</option>
+            {catAvailableCenters.map(f => <option key={f} value={f}>{f}</option>)}
+          </select>
+        </div>
+      </section>
+
+      <section className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-5 flex items-center gap-4">
+          <div className="p-3 bg-blue-100 text-blue-600 rounded-lg"><Users className="w-6 h-6" /></div>
+          <div><p className="text-sm text-slate-500 font-medium">Total HC</p><h3 className="text-2xl font-bold text-slate-800">{globalHc}</h3></div>
+        </div>
+        <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-5 flex items-center gap-4">
+          <div className="p-3 bg-red-100 text-red-600 rounded-lg"><AlertTriangle className="w-6 h-6" /></div>
+          <div><p className="text-sm text-slate-500 font-medium">Defect HC (MTD &lt; 100%)</p><h3 className="text-2xl font-bold text-red-600">{globalDefectHc}</h3></div>
+        </div>
+        <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-5 flex items-center gap-4">
+          <div className="p-3 bg-orange-100 text-orange-600 rounded-lg"><Target className="w-6 h-6" /></div>
+          <div><p className="text-sm text-slate-500 font-medium">Defect Rate</p><h3 className="text-2xl font-bold text-slate-800">{globalDefectRate.toFixed(1)}%</h3></div>
+        </div>
+      </section>
+
+      <section className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
+        <div className="p-5 border-b border-slate-200 bg-slate-50 flex items-center gap-2">
+           <FileText className="w-5 h-5 text-orange-600" />
+           <h2 className="text-lg font-bold text-slate-800">Defect Breakdown by Center</h2>
+        </div>
+        <div className="overflow-x-auto">
+          <table className="w-full text-left text-sm text-slate-600">
+            <thead className="bg-slate-100 text-slate-600 uppercase text-xs font-semibold border-b border-slate-200">
+              <tr>
+                <th className="px-5 py-4">Center</th>
+                <th className="px-5 py-4 text-center">Headcount (HC)</th>
+                <th className="px-5 py-4 text-center">Defect HC</th>
+                <th className="px-5 py-4 text-center">Defect %</th>
+                <th className="px-5 py-4 text-right">Group Target</th>
+                <th className="px-5 py-4 text-right">Group Sales</th>
+                <th className="px-5 py-4 text-right">Group MTD%</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100">
+              {centerStats.length > 0 ? centerStats.map((row, idx) => (
+                <tr key={idx} className="hover:bg-slate-50 transition-colors">
+                  <td className="px-5 py-3 font-medium text-slate-800">{row.center}</td>
+                  <td className="px-5 py-3 text-center">{row.hc}</td>
+                  <td className="px-5 py-3 text-center font-bold text-red-600">{row.defectHc}</td>
+                  <td className="px-5 py-3 text-center font-medium">{row.defectPct.toFixed(1)}%</td>
+                  <td className="px-5 py-3 text-right">{formatValue(row.totalTarget, 'currency')}</td>
+                  <td className="px-5 py-3 text-right">{formatValue(row.totalSales, 'currency')}</td>
+                  <td className={`px-5 py-3 text-right font-bold ${row.groupMtdPct < 100 ? 'text-amber-600' : 'text-emerald-600'}`}>{row.groupMtdPct.toFixed(1)}%</td>
+                </tr>
+              )) : (
+                <tr><td colSpan={7} className="px-5 py-8 text-center text-slate-500">No data found for current filters.</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </section>
+    </div>
+  );
+}
+
+// ------------------------------------------------------------------------------------
+// MAIN APP COMPONENT WITH SIDEBAR LAYOUT
+// ------------------------------------------------------------------------------------
+export default function App() {
+  const [activeTab, setActiveTab] = useState('sales');
+  const [data, setData] = useState([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [fetchError, setFetchError] = useState('');
+  const [lastRefreshTime, setLastRefreshTime] = useState(null);
+  
+  const [todayInfo, setTodayInfo] = useState({ display: '', workingDay: { mtd: '?', fullMonth: '?' }, isBeforeNoon: false });
+  const workingDayMapRef = useRef({});
+  
+  useEffect(() => {
+    const SHEET_ID = '1COhg1p1zrqNvak3FhpEuH5n9ln2Hoe5fbh2aQS-EDa8';
+    const SALES_SHEET_NAME = 'HK Autosync Commitment';
+    const WD_SHEET_NAME = 'HK Working Day';
+    const SALES_CSV_URL = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent(SALES_SHEET_NAME)}`;
+    const WD_CSV_URL = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent(WD_SHEET_NAME)}`;
+    
+    const fetchAllData = async () => {
+      try {
+        const wdRes = await fetch(WD_CSV_URL);
+        if (wdRes.ok) {
+          const wdText = await wdRes.text();
+          const map = parseWorkingDays(wdText);
+          workingDayMapRef.current = map;
+          setTodayInfo(getTodayInfo(map));
+        }
+
+        const salesRes = await fetch(SALES_CSV_URL);
+        if (!salesRes.ok) throw new Error('Network response was not ok');
+        const text = await salesRes.text();
+        const parsedData = parseCSV(text);
+        if (parsedData.length > 0) {
+          setData(parsedData);
+          setLastRefreshTime(new Date().toLocaleTimeString('en-US', { timeZone: 'Asia/Hong_Kong', hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' }));
+        } else {
+          setFetchError("File parsed, but no valid sales data rows were found.");
+        }
+      } catch (err) {
+        console.error("Failed to auto-fetch sheets:", err);
+        setFetchError("Unable to auto-sync with the Google Sheet. Please use the upload button.");
+      } finally {
+        setIsLoading(false);
+      }
+    };
+
+    fetchAllData();
+
+    const interval = setInterval(() => {
+      setTodayInfo(getTodayInfo(workingDayMapRef.current));
+    }, 60000);
+    return () => clearInterval(interval);
+  }, []);
+
+  const handleFileUpload = (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      const parsedData = parseCSV(event.target.result);
+      setData(parsedData);
+      setLastRefreshTime(new Date().toLocaleTimeString('en-US', { timeZone: 'Asia/Hong_Kong', hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' }));
+    };
+    reader.readAsText(file);
+  };
+
+  return (
+    <div className="flex h-screen bg-slate-50 text-slate-800 font-sans selection:bg-blue-200 overflow-hidden">
+      
+      <aside className="w-64 bg-slate-900 text-slate-300 flex flex-col flex-shrink-0">
+        <div className="h-16 flex items-center px-6 border-b border-slate-800 bg-slate-950/50">
+          <TrendingUp className="w-6 h-6 text-blue-500 mr-3" />
+          <h1 className="text-lg font-bold text-white tracking-tight">Performance</h1>
+        </div>
+        
+        <div className="p-4 space-y-1 flex-1">
+          <button onClick={() => setActiveTab('sales')} className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg transition-colors text-sm font-medium ${activeTab === 'sales' ? 'bg-blue-600 text-white' : 'hover:bg-slate-800 hover:text-white'}`}>
+            <LayoutDashboard className="w-4 h-4" /> Sales Overview
+          </button>
+          <button onClick={() => setActiveTab('cat12')} className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg transition-colors text-sm font-medium ${activeTab === 'cat12' ? 'bg-blue-600 text-white' : 'hover:bg-slate-800 hover:text-white'}`}>
+            <FileText className="w-4 h-4" /> CAT 1/2
+          </button>
+        </div>
+        <div className="p-4 border-t border-slate-800 text-xs text-slate-500">HK Autosync Tracker v2.0</div>
+      </aside>
+
+      <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
+        
+        <header className="h-16 bg-white border-b border-slate-200 flex items-center justify-between px-8 flex-shrink-0 z-10 shadow-sm">
+          <h2 className="text-xl font-bold text-slate-800 tracking-tight">{activeTab === 'sales' ? 'HK Autosync Commit. Tracker' : 'CAT 1/2 Tracker'}</h2>
+          
+          <div className="flex flex-col items-end justify-center">
+            <div className="flex items-center gap-4 mb-1">
+              <button onClick={() => window.location.reload()} className="p-2 text-slate-400 hover:text-blue-600 transition-colors" title="Force Sync">
+                <RefreshCw className="w-5 h-5" />
+              </button>
+              <label className="cursor-pointer bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2 rounded-lg text-sm font-medium shadow-sm transition-colors flex items-center gap-2">
+                <Upload className="w-4 h-4" />
+                Manual Upload (CSV)
+                <input type="file" accept=".csv" className="hidden" onChange={handleFileUpload} />
+              </label>
+              {todayInfo.display && (
+                <div className="flex items-center gap-2 bg-blue-50 border border-blue-100 text-blue-700 px-4 py-1.5 rounded-full shadow-sm" title={todayInfo.isBeforeNoon ? "Showing yesterday's working day because it is before 12:00 PM HKT" : "Showing current working day"}>
+                  <CalendarDays className="w-4 h-4" />
+                  <span className="text-sm font-semibold">Today is {todayInfo.display} | Working Day: {todayInfo.workingDay.mtd} / {todayInfo.workingDay.fullMonth}</span>
+                </div>
+              )}
+            </div>
+            {lastRefreshTime && (
+              <div className="flex items-center gap-1 text-xs text-slate-400 mr-2 font-medium">
+                <Clock className="w-3 h-3" /> Last Synced: {lastRefreshTime} HKT
+              </div>
+            )}
+          </div>
+        </header>
+
+        <main className="flex-1 overflow-auto px-8 py-8 relative">
+          {isLoading ? (
+            <div className="flex flex-col items-center justify-center h-[60vh] border-2 border-dashed border-slate-300 rounded-xl bg-white shadow-sm">
+               <Loader2 className="w-12 h-12 text-blue-500 mb-4 animate-spin" />
+               <h3 className="text-xl font-bold text-slate-800 mb-2">Syncing with Google Sheets...</h3>
+               <p className="text-slate-500">Fetching live data from your HK Autosync link.</p>
+            </div>
+          ) : data.length === 0 ? (
+            <div className="flex flex-col items-center justify-center h-[60vh] border-2 border-dashed border-slate-300 rounded-xl bg-white shadow-sm">
+               <AlertTriangle className="w-12 h-12 text-orange-500 mb-4" />
+               <h3 className="text-xl font-bold text-slate-800 mb-2">No Live Data Connected</h3>
+               <p className="text-slate-500 text-center max-w-md mb-6">
+                 {fetchError || 'Unable to load data. Please manually upload the exported CSV using the green button.'}
+               </p>
+            </div>
+          ) : (
+            activeTab === 'sales' ? <SalesOverview rawData={data} todayInfo={todayInfo} /> : <Cat12Overview rawData={data} />
+          )}
+        </main>
+
+      </div>
+    </div>
+  );
+}
