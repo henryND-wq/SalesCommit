@@ -135,7 +135,7 @@
       });
     };
 
-    // --- ROBUST SALES CSV PARSER ---
+    // --- ROBUST SALES CSV PARSER (DYNAMIC HEADER MAPPING) ---
     const parseCSV = (csvText) => {
       const lines = [];
       let currentLine = [];
@@ -171,25 +171,45 @@
         lines.push(currentLine);
       }
 
+      if (lines.length < 2) return [];
+
+      // Dynamically locate exact columns to make it immune to column shifts
+      const headers = lines[0].map(h => h.replace(/"/g, '').toLowerCase().trim());
+      const getIdx = (str) => headers.findIndex(h => h.includes(str.toLowerCase().trim()));
+
+      const cBrand = getIdx('brand') !== -1 ? getIdx('brand') : 0;
+      const cCenter = getIdx('center') !== -1 ? getIdx('center') : 2;
+      const cTherapist = getIdx('therapist') !== -1 ? getIdx('therapist') : 3;
+      const cPosition = getIdx('position') !== -1 ? getIdx('position') : 5;
+      
+      const cSalesMtd = getIdx('actual sales (mtd)') !== -1 ? getIdx('actual sales (mtd)') : 7;
+      const cTargetMtd = getIdx('mtd target') !== -1 ? getIdx('mtd target') : 8;
+      const cTargetFm = getIdx('full month target') !== -1 ? getIdx('full month target') : 9;
+      
+      const cT3 = getIdx('t-3 sales') !== -1 ? getIdx('t-3 sales') : 16;
+      const cT2 = getIdx('t-2 sales') !== -1 ? getIdx('t-2 sales') : 19;
+      const cT1 = getIdx('t-1 sales') !== -1 ? getIdx('t-1 sales') : 22;
+      const cToday = getIdx('today sales') !== -1 ? getIdx('today sales') : 25;
+
       const parsedData = [];
       for (let i = 1; i < lines.length; i++) {
         const row = lines[i];
-        if (row.length > 25) { 
+        if (row.length > 10) { 
           parsedData.push({
             id: i,
-            brand: (row[0] || '').replace(/"/g, '').trim(),
-            center: (row[2] || '').replace(/"/g, '').trim(),
-            therapist: (row[3] || '').replace(/"/g, '').trim(),
-            position: (row[5] || '').replace(/"/g, '').trim(),
+            brand: (row[cBrand] || '').replace(/"/g, '').trim(),
+            center: (row[cCenter] || '').replace(/"/g, '').trim(),
+            therapist: (row[cTherapist] || '').replace(/"/g, '').trim(),
+            position: (row[cPosition] || '').replace(/"/g, '').trim(),
             
-            actualSalesMtd: cleanNum(row[7]),
-            mtdTarget: cleanNum(row[8]),
-            fmTarget: cleanNum(row[9]),
+            actualSalesMtd: cleanNum(row[cSalesMtd]),
+            mtdTarget: cleanNum(row[cTargetMtd]),
+            fmTarget: cleanNum(row[cTargetFm]),
             
-            t3Sales: cleanNum(row[16]),
-            t2Sales: cleanNum(row[19]),
-            t1Sales: cleanNum(row[22]),
-            todaySales: cleanNum(row[25]),
+            t3Sales: cleanNum(row[cT3]),
+            t2Sales: cleanNum(row[cT2]),
+            t1Sales: cleanNum(row[cT1]),
+            todaySales: cleanNum(row[cToday]),
           });
         }
       }
@@ -260,14 +280,9 @@
       const summary = useMemo(() => {
         let totalMtdSales = 0, totalTodaySales = 0, totalT1Sales = 0, totalTarget = 0, totalFmTarget = 0;
         
-        kpiFilteredData.forEach(row => {
-          totalMtdSales += row.actualSalesMtd || 0;
-          totalTodaySales += row.todaySales || 0;
-          totalT1Sales += row.t1Sales || 0;
-        });
-
         const isKpiFilteredBySubLevel = kpiPosition !== 'All' || kpiTherapist !== 'All';
 
+        // Fetch official Total row EXACT Values (Targets AND Sales) to avoid overcalculation
         let sourceRow = null;
         if (!isKpiFilteredBySubLevel) {
             if (kpiCenter !== 'All') {
@@ -278,18 +293,30 @@
         }
 
         if (sourceRow) {
+            totalMtdSales = sourceRow.actualSalesMtd;
+            totalTodaySales = sourceRow.todaySales;
+            totalT1Sales = sourceRow.t1Sales;
             totalTarget = sourceRow.mtdTarget;
             totalFmTarget = sourceRow.fmTarget;
         } else if (!isKpiFilteredBySubLevel && kpiBrand === 'All' && kpiCenter === 'All') {
             const brandTotalRows = rawData.filter(r => r.center.toLowerCase() === 'total' && r.therapist.toLowerCase() === 'total' && r.brand && !r.brand.toLowerCase().includes('total'));
             if (brandTotalRows.length > 0) {
+                totalMtdSales = brandTotalRows.reduce((s, r) => s + r.actualSalesMtd, 0);
+                totalTodaySales = brandTotalRows.reduce((s, r) => s + r.todaySales, 0);
+                totalT1Sales = brandTotalRows.reduce((s, r) => s + r.t1Sales, 0);
                 totalTarget = brandTotalRows.reduce((s, r) => s + r.mtdTarget, 0);
                 totalFmTarget = brandTotalRows.reduce((s, r) => s + r.fmTarget, 0);
             } else {
+                totalMtdSales = kpiFilteredData.reduce((s, r) => s + r.actualSalesMtd, 0);
+                totalTodaySales = kpiFilteredData.reduce((s, r) => s + r.todaySales, 0);
+                totalT1Sales = kpiFilteredData.reduce((s, r) => s + r.t1Sales, 0);
                 totalTarget = kpiFilteredData.reduce((s, r) => s + r.mtdTarget, 0);
                 totalFmTarget = kpiFilteredData.reduce((s, r) => s + r.fmTarget, 0);
             }
         } else {
+            totalMtdSales = kpiFilteredData.reduce((s, r) => s + r.actualSalesMtd, 0);
+            totalTodaySales = kpiFilteredData.reduce((s, r) => s + r.todaySales, 0);
+            totalT1Sales = kpiFilteredData.reduce((s, r) => s + r.t1Sales, 0);
             totalTarget = kpiFilteredData.reduce((s, r) => s + r.mtdTarget, 0);
             totalFmTarget = kpiFilteredData.reduce((s, r) => s + r.fmTarget, 0);
         }
@@ -387,11 +414,11 @@
               }
           }
 
-          let finalSalesMtd = group._actualSalesMtd;
-          let finalTodaySales = group._todaySales;
-          let finalT1Sales = group._t1Sales;
-          let finalT2Sales = group._t2Sales;
-          let finalT3Sales = group._t3Sales;
+          let finalSalesMtd = sourceRow ? sourceRow.actualSalesMtd : group._actualSalesMtd;
+          let finalTodaySales = sourceRow ? sourceRow.todaySales : group._todaySales;
+          let finalT1Sales = sourceRow ? sourceRow.t1Sales : group._t1Sales;
+          let finalT2Sales = sourceRow ? sourceRow.t2Sales : group._t2Sales;
+          let finalT3Sales = sourceRow ? sourceRow.t3Sales : group._t3Sales;
 
           let finalMtdTarget = sourceRow ? sourceRow.mtdTarget : group._mtdTarget;
           let finalFmTarget = sourceRow ? sourceRow.fmTarget : group._fmTarget;
@@ -399,6 +426,11 @@
           if (!sourceRow && !hasTherapist && !hasPosition && !hasCenter && !hasBrand && !isFilteredBySubLevel) {
               const brandTotalRows = rawData.filter(r => r.center.toLowerCase() === 'total' && r.therapist.toLowerCase() === 'total' && r.brand && !r.brand.toLowerCase().includes('total'));
               if (brandTotalRows.length > 0) {
+                  finalSalesMtd = brandTotalRows.reduce((s, r) => s + r.actualSalesMtd, 0);
+                  finalTodaySales = brandTotalRows.reduce((s, r) => s + r.todaySales, 0);
+                  finalT1Sales = brandTotalRows.reduce((s, r) => s + r.t1Sales, 0);
+                  finalT2Sales = brandTotalRows.reduce((s, r) => s + r.t2Sales, 0);
+                  finalT3Sales = brandTotalRows.reduce((s, r) => s + r.t3Sales, 0);
                   finalMtdTarget = brandTotalRows.reduce((s, r) => s + r.mtdTarget, 0);
                   finalFmTarget = brandTotalRows.reduce((s, r) => s + r.fmTarget, 0);
               }
@@ -738,7 +770,7 @@
           
           const centerTotalRow = rawData.find(r => r.center.toLowerCase() === group.center.toLowerCase() && r.therapist.toLowerCase() === 'total');
           const finalTarget = centerTotalRow ? centerTotalRow.mtdTarget : group.totalTarget;
-          const finalSales = group.totalSales; 
+          const finalSales = centerTotalRow ? centerTotalRow.actualSalesMtd : group.totalSales; 
 
           return {
             center: group.center,
@@ -845,7 +877,7 @@
       const workingDayMapRef = useRef({});
       
       useEffect(() => {
-        const SHEET_ID = '1COhg1p1zrqNvak3FhpEuH5n9ln2Hoe5fbh2aQS-EDa8';
+        const SHEET_ID = '1fueysQjwsNx7Xt5vbKwde4ZF9rLBDWyLkVSmuuj2QBo';
         const SALES_SHEET_NAME = 'HK Autosync Commitment';
         const WD_SHEET_NAME = 'HK Working Day';
         const SALES_CSV_URL = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent(SALES_SHEET_NAME)}`;
