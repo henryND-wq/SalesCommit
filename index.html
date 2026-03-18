@@ -193,12 +193,22 @@
       return value;
     };
 
+    const formatShortNum = (value, prefix = '') => {
+      if (value === undefined || value === null || isNaN(value)) return prefix + '0';
+      const absVal = Math.abs(value);
+      const sign = value < 0 ? '-' : '';
+      if (absVal >= 1000000) return sign + prefix + (absVal / 1000000).toFixed(2).replace(/\.00$/, '') + 'M';
+      if (absVal >= 1000) return sign + prefix + (absVal / 1000).toFixed(1).replace(/\.0$/, '') + 'K';
+      return sign + prefix + Math.round(absVal).toString();
+    };
+
     // Global Highlighting Evaluator
     const getHighlightStyle = (val, runRate, settings) => {
+        // Cascade from highest threshold down to lowest
         if (val >= runRate * settings.rule1.multiplier) return { color: settings.rule1.color, fontWeight: '800' };
         if (val >= runRate * settings.rule2.multiplier) return { color: settings.rule2.color, fontWeight: '800' };
-        if (val >= settings.rule3.value) return { color: settings.rule3.color, fontWeight: '800' };
-        if (val >= runRate * settings.rule4.multiplier) return { color: settings.rule4.color, fontWeight: '800' };
+        if (val >= runRate * settings.rule3.multiplier) return { color: settings.rule3.color, fontWeight: '800' };
+        if (val >= settings.rule4.value) return { color: settings.rule4.color, fontWeight: '800' };
         if (val >= settings.rule5.value) return { color: settings.rule5.color, fontWeight: '800' };
         return { color: settings.rule6.color, fontWeight: '800' };
     };
@@ -213,6 +223,7 @@
       const [kpiTherapist, setKpiTherapist] = useState('All');
       
       const [showExtraKpis, setShowExtraKpis] = useState(false);
+      const [showChart, setShowChart] = useState(false);
       
       // Global Dynamic Custom Thresholds
       const [mtdThreshold1, setMtdThreshold1] = useState(100);
@@ -250,19 +261,19 @@
         { id: 'mtdPct', label: 'MTD %', type: 'metric', category: 'percentage', format: 'pct', color: 'bg-teal-100 text-teal-700 border-teal-200 hover:bg-teal-200' },
         { id: 'fmSalesPct', label: 'Full Month Sales %', type: 'metric', category: 'percentage', format: 'pct', color: 'bg-teal-100 text-teal-700 border-teal-200 hover:bg-teal-200' },
         { id: 'therapistPct', label: 'Therapist %', type: 'metric', category: 'percentage', format: 'pct', color: 'bg-teal-100 text-teal-700 border-teal-200 hover:bg-teal-200' },
-        { id: 'therapistPctMtd1', label: `Therapist % (MTD > ${mtdThreshold1}%)`, type: 'metric', category: 'percentage', format: 'pct', color: 'bg-teal-100 text-teal-700 border-teal-200 hover:bg-teal-200' },
-        { id: 'therapistPctMtd2', label: `Therapist % (MTD > ${mtdThreshold2}%)`, type: 'metric', category: 'percentage', format: 'pct', color: 'bg-teal-100 text-teal-700 border-teal-200 hover:bg-teal-200' },
-        { id: 'therapistPctMtd3', label: `Therapist % (MTD > ${mtdThreshold3}%)`, type: 'metric', category: 'percentage', format: 'pct', color: 'bg-teal-100 text-teal-700 border-teal-200 hover:bg-teal-200' },
-        { id: 'therapistPctFm', label: `Therapist % (FM Tgt > $${fmTargetThreshold.toLocaleString()})`, type: 'metric', category: 'percentage', format: 'pct', color: 'bg-teal-100 text-teal-700 border-teal-200 hover:bg-teal-200' },
-        { id: 'therapistPctSales', label: `Therapist % (Sales > $${salesThreshold.toLocaleString()})`, type: 'metric', category: 'percentage', format: 'pct', color: 'bg-teal-100 text-teal-700 border-teal-200 hover:bg-teal-200' },
+        { id: 'therapistPctMtd1', label: `Therapist % (MTD > ${mtdThreshold1}%)`, type: 'metric', category: 'percentage', format: 'pct', color: 'bg-fuchsia-50 text-fuchsia-700 border-fuchsia-400 border-dashed border-2 hover:bg-fuchsia-100', isCustom: true },
+        { id: 'therapistPctMtd2', label: `Therapist % (MTD > ${mtdThreshold2}%)`, type: 'metric', category: 'percentage', format: 'pct', color: 'bg-fuchsia-50 text-fuchsia-700 border-fuchsia-400 border-dashed border-2 hover:bg-fuchsia-100', isCustom: true },
+        { id: 'therapistPctMtd3', label: `Therapist % (MTD > ${mtdThreshold3}%)`, type: 'metric', category: 'percentage', format: 'pct', color: 'bg-fuchsia-50 text-fuchsia-700 border-fuchsia-400 border-dashed border-2 hover:bg-fuchsia-100', isCustom: true },
+        { id: 'therapistPctFm', label: `Therapist % (FM Target > $${fmTargetThreshold.toLocaleString()})`, type: 'metric', category: 'percentage', format: 'pct', color: 'bg-fuchsia-50 text-fuchsia-700 border-fuchsia-400 border-dashed border-2 hover:bg-fuchsia-100', isCustom: true },
+        { id: 'therapistPctSales', label: `Therapist % (Sales > $${salesThreshold.toLocaleString()})`, type: 'metric', category: 'percentage', format: 'pct', color: 'bg-fuchsia-50 text-fuchsia-700 border-fuchsia-400 border-dashed border-2 hover:bg-fuchsia-100', isCustom: true },
         
         { id: 'therapistCount', label: 'Count of Therapist', type: 'metric', category: 'count', format: 'number', color: 'bg-blue-100 text-blue-700 border-blue-200 hover:bg-blue-200' },
         { id: 'allTherapistCount', label: 'All Count of Therapist', type: 'metric', category: 'count', format: 'number', color: 'bg-blue-100 text-blue-700 border-blue-200 hover:bg-blue-200' },
-        { id: 'therapistCountMtd1', label: `Count (MTD > ${mtdThreshold1}%)`, type: 'metric', category: 'count', format: 'number', color: 'bg-blue-100 text-blue-700 border-blue-200 hover:bg-blue-200' },
-        { id: 'therapistCountMtd2', label: `Count (MTD > ${mtdThreshold2}%)`, type: 'metric', category: 'count', format: 'number', color: 'bg-blue-100 text-blue-700 border-blue-200 hover:bg-blue-200' },
-        { id: 'therapistCountMtd3', label: `Count (MTD > ${mtdThreshold3}%)`, type: 'metric', category: 'count', format: 'number', color: 'bg-blue-100 text-blue-700 border-blue-200 hover:bg-blue-200' },
-        { id: 'therapistCountFm', label: `Count (FM Tgt > $${fmTargetThreshold.toLocaleString()})`, type: 'metric', category: 'count', format: 'number', color: 'bg-blue-100 text-blue-700 border-blue-200 hover:bg-blue-200' },
-        { id: 'therapistCountSales', label: `Count (Sales > $${salesThreshold.toLocaleString()})`, type: 'metric', category: 'count', format: 'number', color: 'bg-blue-100 text-blue-700 border-blue-200 hover:bg-blue-200' },
+        { id: 'therapistCountMtd1', label: `Count (MTD > ${mtdThreshold1}%)`, type: 'metric', category: 'count', format: 'number', color: 'bg-fuchsia-50 text-fuchsia-700 border-fuchsia-400 border-dashed border-2 hover:bg-fuchsia-100', isCustom: true },
+        { id: 'therapistCountMtd2', label: `Count (MTD > ${mtdThreshold2}%)`, type: 'metric', category: 'count', format: 'number', color: 'bg-fuchsia-50 text-fuchsia-700 border-fuchsia-400 border-dashed border-2 hover:bg-fuchsia-100', isCustom: true },
+        { id: 'therapistCountMtd3', label: `Count (MTD > ${mtdThreshold3}%)`, type: 'metric', category: 'count', format: 'number', color: 'bg-fuchsia-50 text-fuchsia-700 border-fuchsia-400 border-dashed border-2 hover:bg-fuchsia-100', isCustom: true },
+        { id: 'therapistCountFm', label: `Count (FM Target > $${fmTargetThreshold.toLocaleString()})`, type: 'metric', category: 'count', format: 'number', color: 'bg-fuchsia-50 text-fuchsia-700 border-fuchsia-400 border-dashed border-2 hover:bg-fuchsia-100', isCustom: true },
+        { id: 'therapistCountSales', label: `Count (Sales > $${salesThreshold.toLocaleString()})`, type: 'metric', category: 'count', format: 'number', color: 'bg-fuchsia-50 text-fuchsia-700 border-fuchsia-400 border-dashed border-2 hover:bg-fuchsia-100', isCustom: true },
       ], [mtdThreshold1, mtdThreshold2, mtdThreshold3, fmTargetThreshold, salesThreshold]);
 
       const kpiFilteredData = useMemo(() => {
@@ -345,11 +356,55 @@
 
       const activeDimensions = consoleFields.filter(f => f.type === 'dimension');
 
+      const ruledRawData = useMemo(() => {
+        if (tableRules.length === 0) return consoleFilteredData;
+        return consoleFilteredData.filter(row => {
+          return tableRules.every(rule => {
+            if (!rule.field || !rule.operator || rule.value === '') return true;
+            
+            const fieldDef = REPORT_FIELDS.find(f => f.id === rule.field);
+            let rowVal = row[rule.field];
+            let compareVal = rule.value;
+
+            const isTextOperator = ['contains', 'not_contains', 'starts_with', 'ends_with'].includes(rule.operator);
+
+            if (rule.field === 'mtdPct') {
+                rowVal = row.mtdTarget > 0 ? (row.actualSalesMtd / row.mtdTarget) * 100 : 0;
+            } else if (rule.field === 'fmSalesPct') {
+                rowVal = row.fmTarget > 0 ? (row.actualSalesMtd / row.fmTarget) * 100 : 0;
+            }
+
+            if (fieldDef && (fieldDef.type === 'metric') && !isTextOperator) {
+               rowVal = Number(rowVal);
+               compareVal = Number(compareVal);
+               if (isNaN(rowVal) || isNaN(compareVal)) return true;
+            } else {
+               if (rowVal === undefined || rowVal === null) return false;
+               rowVal = String(rowVal).toLowerCase();
+               compareVal = String(compareVal).toLowerCase();
+            }
+            
+            switch(rule.operator) {
+              case '>': return rowVal > compareVal;
+              case '>=': return rowVal >= compareVal;
+              case '<': return rowVal < compareVal;
+              case '<=': return rowVal <= compareVal;
+              case '=': return rowVal === compareVal;
+              case 'contains': return rowVal.includes(compareVal);
+              case 'not_contains': return !rowVal.includes(compareVal);
+              case 'starts_with': return rowVal.startsWith(compareVal);
+              case 'ends_with': return rowVal.endsWith(compareVal);
+              default: return true;
+            }
+          });
+        });
+      }, [consoleFilteredData, tableRules, REPORT_FIELDS]);
+
       const groupedConsoleData = useMemo(() => {
         if (consoleFields.length === 0) return [];
         const map = new Map();
 
-        consoleFilteredData.forEach(row => {
+        ruledRawData.forEach(row => {
           const key = activeDimensions.length > 0 ? activeDimensions.map(d => row[d.id]).join(' | ') : 'Grand Total';
           
           const rowMtdPct = row.mtdTarget > 0 ? (row.actualSalesMtd / row.mtdTarget) * 100 : 0;
@@ -486,48 +541,10 @@
           
           return group;
         });
-      }, [consoleFilteredData, consoleFields, activeDimensions, rawData, consoleBrand, consoleCenter, consolePosition, consoleTherapist, mtdThreshold1, mtdThreshold2, mtdThreshold3, fmTargetThreshold, salesThreshold]);
-
-      const ruledConsoleData = useMemo(() => {
-        if (tableRules.length === 0) return groupedConsoleData;
-        return groupedConsoleData.filter(row => {
-          return tableRules.every(rule => {
-            if (!rule.field || !rule.operator || rule.value === '') return true;
-            
-            const fieldDef = REPORT_FIELDS.find(f => f.id === rule.field);
-            let rowVal = row[rule.field];
-            let compareVal = rule.value;
-
-            const isTextOperator = ['contains', 'not_contains', 'starts_with', 'ends_with'].includes(rule.operator);
-
-            if (fieldDef && (fieldDef.type === 'metric') && !isTextOperator) {
-               rowVal = Number(rowVal);
-               compareVal = Number(compareVal);
-               if (isNaN(rowVal) || isNaN(compareVal)) return true;
-            } else {
-               if (rowVal === undefined || rowVal === null) return false;
-               rowVal = String(rowVal).toLowerCase();
-               compareVal = String(compareVal).toLowerCase();
-            }
-            
-            switch(rule.operator) {
-              case '>': return rowVal > compareVal;
-              case '>=': return rowVal >= compareVal;
-              case '<': return rowVal < compareVal;
-              case '<=': return rowVal <= compareVal;
-              case '=': return rowVal === compareVal;
-              case 'contains': return rowVal.includes(compareVal);
-              case 'not_contains': return !rowVal.includes(compareVal);
-              case 'starts_with': return rowVal.startsWith(compareVal);
-              case 'ends_with': return rowVal.endsWith(compareVal);
-              default: return true;
-            }
-          });
-        });
-      }, [groupedConsoleData, tableRules, REPORT_FIELDS]);
+      }, [ruledRawData, consoleFields, activeDimensions, rawData, consoleBrand, consoleCenter, consolePosition, consoleTherapist, mtdThreshold1, mtdThreshold2, mtdThreshold3, fmTargetThreshold, salesThreshold]);
 
       const sortedConsoleData = useMemo(() => {
-        let sortableItems = [...ruledConsoleData];
+        let sortableItems = [...groupedConsoleData];
         if (sortConfig.key !== null) {
           sortableItems.sort((a, b) => {
             let aVal = a[sortConfig.key];
@@ -544,7 +561,7 @@
           });
         }
         return sortableItems;
-      }, [ruledConsoleData, sortConfig]);
+      }, [groupedConsoleData, sortConfig]);
 
       const requestSort = (key) => {
         let direction = 'asc';
@@ -796,7 +813,7 @@
                 <div>
                   <h4 className="text-xs font-bold text-emerald-400 mb-2 tracking-widest uppercase">Values ($ Currency)</h4>
                   <div className="flex flex-wrap gap-2">
-                    {REPORT_FIELDS.filter(f => f.category === 'currency' && !consoleFields.find(cf => cf.id === f.id)).map(field => (
+                    {REPORT_FIELDS.filter(f => f.category === 'currency' && !f.isCustom && !consoleFields.find(cf => cf.id === f.id)).map(field => (
                         <div
                           key={field.id} draggable onDragStart={(e) => handleDragStart(e, field, null)} onDragEnd={handleDragEnd}
                           className={`px-3 py-1 rounded-full text-xs font-semibold border shadow-sm transition-transform cursor-grab active:cursor-grabbing hover:-translate-y-0.5 ${field.color}`}
@@ -810,7 +827,7 @@
                 <div>
                   <h4 className="text-xs font-bold text-teal-400 mb-2 tracking-widest uppercase">Values (% Percentage)</h4>
                   <div className="flex flex-wrap gap-2">
-                    {REPORT_FIELDS.filter(f => f.category === 'percentage' && !consoleFields.find(cf => cf.id === f.id)).map(field => (
+                    {REPORT_FIELDS.filter(f => f.category === 'percentage' && !f.isCustom && !consoleFields.find(cf => cf.id === f.id)).map(field => (
                         <div
                           key={field.id} draggable onDragStart={(e) => handleDragStart(e, field, null)} onDragEnd={handleDragEnd}
                           className={`px-3 py-1 rounded-full text-xs font-semibold border shadow-sm transition-transform cursor-grab active:cursor-grabbing hover:-translate-y-0.5 ${field.color}`}
@@ -824,7 +841,21 @@
                 <div>
                   <h4 className="text-xs font-bold text-blue-400 mb-2 tracking-widest uppercase">Values (Counts)</h4>
                   <div className="flex flex-wrap gap-2">
-                    {REPORT_FIELDS.filter(f => f.category === 'count' && !consoleFields.find(cf => cf.id === f.id)).map(field => (
+                    {REPORT_FIELDS.filter(f => f.category === 'count' && !f.isCustom && !consoleFields.find(cf => cf.id === f.id)).map(field => (
+                        <div
+                          key={field.id} draggable onDragStart={(e) => handleDragStart(e, field, null)} onDragEnd={handleDragEnd}
+                          className={`px-3 py-1 rounded-full text-xs font-semibold border shadow-sm transition-transform cursor-grab active:cursor-grabbing hover:-translate-y-0.5 ${field.color}`}
+                        >
+                          <div className="flex items-center gap-1.5"><GripHorizontal className="w-3 h-3 opacity-50" />{field.label}</div>
+                        </div>
+                    ))}
+                  </div>
+                </div>
+
+                <div>
+                  <h4 className="text-xs font-bold text-fuchsia-500 mb-2 tracking-widest uppercase">Customized Threshold Metrics</h4>
+                  <div className="flex flex-wrap gap-2">
+                    {REPORT_FIELDS.filter(f => f.isCustom && !consoleFields.find(cf => cf.id === f.id)).map(field => (
                         <div
                           key={field.id} draggable onDragStart={(e) => handleDragStart(e, field, null)} onDragEnd={handleDragEnd}
                           className={`px-3 py-1 rounded-full text-xs font-semibold border shadow-sm transition-transform cursor-grab active:cursor-grabbing hover:-translate-y-0.5 ${field.color}`}
@@ -837,14 +868,15 @@
               </div>
                
                {/* Dropzone */}
-               <div onDragOver={handleDragOverArea} onDrop={handleDropArea} className={`min-h-[80px] rounded-xl border-2 transition-colors flex flex-wrap items-center gap-2 p-4 ${consoleFields.length === 0 ? 'border-dashed border-slate-300 bg-slate-50 justify-center' : 'border-dashed border-indigo-200 bg-indigo-50/30'}`}>
-                 {consoleFields.length === 0 ? (
-                   <div className="text-center text-slate-400 flex flex-col items-center pointer-events-none">
-                     <Plus className="w-6 h-6 mb-1 opacity-50" />
-                     <p className="text-sm">Drag Dimensions and Metrics here. Drag to reorder.</p>
-                   </div>
-                 ) : (
-                   consoleFields.map((field, idx) => {
+           <div onDragOver={handleDragOverArea} onDrop={handleDropArea} className={`min-h-[80px] rounded-xl border-2 transition-colors flex flex-wrap items-center gap-2 p-4 ${consoleFields.length === 0 ? 'border-dashed border-slate-300 bg-slate-50 justify-center' : 'border-dashed border-indigo-200 bg-indigo-50/30'}`}>
+             {consoleFields.length === 0 ? (
+               <div className="text-center text-slate-400 flex flex-col items-center pointer-events-none">
+                 <Plus className="w-6 h-6 mb-1 opacity-50" />
+                 <p className="text-sm font-medium text-slate-500">Drag Dimensions and Metrics here. Drag to reorder.</p>
+                 <p className="text-xs mt-1 text-slate-400 italic">You can decide the grouping with the customized fields above.</p>
+               </div>
+             ) : (
+               consoleFields.map((field, idx) => {
                      const displayLabel = REPORT_FIELDS.find(f => f.id === field.id)?.label || field.label;
                      return (
                        <div 
@@ -861,53 +893,46 @@
                </div>
 
                {/* Configuration Tools Block */}
-               {consoleFields.length > 0 && (
-                 <div className="mt-4 p-4 rounded-xl border border-slate-200 bg-white space-y-6">
-                   
-                   {/* Thresholds Settings */}
-                   <div>
-                     <h3 className="text-sm font-bold text-slate-700 flex items-center gap-2 mb-3">
-                       <Target className="w-4 h-4 text-amber-500" /> Custom Threshold Settings
-                     </h3>
-                     <div className="flex flex-wrap gap-4 text-sm bg-slate-50 p-3 rounded-lg border border-slate-200">
-                        <div className="flex items-center gap-2">
-                          <label className="font-semibold whitespace-nowrap text-slate-600">MTD% Thresholds:</label>
-                          <input type="number" value={mtdThreshold1} onChange={(e) => setMtdThreshold1(Number(e.target.value))} className="w-14 px-1 py-0.5 text-center outline-none text-slate-800 font-bold border border-slate-300 rounded focus:ring-2 focus:ring-blue-500" />
-                          <input type="number" value={mtdThreshold2} onChange={(e) => setMtdThreshold2(Number(e.target.value))} className="w-14 px-1 py-0.5 text-center outline-none text-slate-800 font-bold border border-slate-300 rounded focus:ring-2 focus:ring-blue-500" />
-                          <input type="number" value={mtdThreshold3} onChange={(e) => setMtdThreshold3(Number(e.target.value))} className="w-14 px-1 py-0.5 text-center outline-none text-slate-800 font-bold border border-slate-300 rounded focus:ring-2 focus:ring-blue-500" />
-                        </div>
-                        <div className="hidden md:block w-px h-6 bg-slate-300"></div>
-                        <div className="flex items-center gap-2">
-                          <label className="font-semibold whitespace-nowrap text-slate-600">Sales Threshold $:</label>
-                          <input type="number" value={salesThreshold} onChange={(e) => setSalesThreshold(Number(e.target.value))} className="w-24 px-1 py-0.5 text-center outline-none text-slate-800 font-bold border border-slate-300 rounded focus:ring-2 focus:ring-blue-500" />
-                        </div>
-                        <div className="hidden lg:block w-px h-6 bg-slate-300"></div>
-                        <div className="flex items-center gap-2">
-                          <label className="font-semibold whitespace-nowrap text-slate-600">FM Target $:</label>
-                          <input type="number" value={fmTargetThreshold} onChange={(e) => setFmTargetThreshold(Number(e.target.value))} className="w-24 px-1 py-0.5 text-center outline-none text-slate-800 font-bold border border-slate-300 rounded focus:ring-2 focus:ring-blue-500" />
-                        </div>
-                     </div>
-                   </div>
+           {consoleFields.length > 0 && (
+             <div className="mt-4 space-y-4">
+               
+               {/* Thresholds Settings (Compact Inline) */}
+               <div className="flex flex-wrap items-center gap-4 text-sm bg-white px-4 py-3 rounded-xl border border-slate-200 shadow-sm">
+                  <div className="flex items-center gap-2">
+                    <label className="font-semibold text-slate-600">MTD% Thresholds:</label>
+                    <input type="number" value={mtdThreshold1} onChange={(e) => setMtdThreshold1(Number(e.target.value))} className="w-14 px-1 py-0.5 text-center outline-none text-slate-800 font-bold border border-slate-300 rounded focus:ring-2 focus:ring-blue-500" />
+                    <input type="number" value={mtdThreshold2} onChange={(e) => setMtdThreshold2(Number(e.target.value))} className="w-14 px-1 py-0.5 text-center outline-none text-slate-800 font-bold border border-slate-300 rounded focus:ring-2 focus:ring-blue-500" />
+                    <input type="number" value={mtdThreshold3} onChange={(e) => setMtdThreshold3(Number(e.target.value))} className="w-14 px-1 py-0.5 text-center outline-none text-slate-800 font-bold border border-slate-300 rounded focus:ring-2 focus:ring-blue-500" />
+                  </div>
+                  <div className="hidden md:block w-px h-5 bg-slate-200"></div>
+                  <div className="flex items-center gap-2">
+                    <label className="font-semibold text-slate-600">Sales Threshold $:</label>
+                    <input type="number" value={salesThreshold} onChange={(e) => setSalesThreshold(Number(e.target.value))} className="w-24 px-1 py-0.5 text-center outline-none text-slate-800 font-bold border border-slate-300 rounded focus:ring-2 focus:ring-blue-500" />
+                  </div>
+                  <div className="hidden lg:block w-px h-5 bg-slate-200"></div>
+                  <div className="flex items-center gap-2">
+                    <label className="font-semibold text-slate-600">FM Target $:</label>
+                    <input type="number" value={fmTargetThreshold} onChange={(e) => setFmTargetThreshold(Number(e.target.value))} className="w-24 px-1 py-0.5 text-center outline-none text-slate-800 font-bold border border-slate-300 rounded focus:ring-2 focus:ring-blue-500" />
+                  </div>
+               </div>
 
-                   <hr className="border-slate-100" />
-
-                   {/* Table Rules Engine */}
-                   <div>
-                     <div className="flex items-center justify-between mb-3">
-                       <h3 className="text-sm font-bold text-slate-700 flex items-center gap-2">
-                         <FilterX className="w-4 h-4 text-blue-500" /> Filter Rules (By Condition)
-                       </h3>
-                       <button onClick={addRule} className="text-xs flex items-center gap-1 bg-blue-50 text-blue-700 font-semibold px-2 py-1 rounded hover:bg-blue-100 transition-colors">
-                          <Plus className="w-3 h-3" /> Add Rule
-                       </button>
-                     </div>
-                     
-                     {tableRules.length === 0 ? (
-                       <p className="text-xs text-slate-400 italic px-2">No custom rules applied. Click "Add Rule" to filter your table rows based on ANY field.</p>
-                     ) : (
-                       <div className="space-y-2 bg-slate-50 p-3 rounded-lg border border-slate-200">
-                         {tableRules.map((rule) => (
-                            <div key={rule.id} className="flex items-center gap-2 text-sm flex-wrap">
+               {/* Table Rules Engine */}
+               <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
+                 <div className="flex items-center justify-between mb-2">
+                   <h3 className="text-sm font-bold text-slate-700 flex items-center gap-2">
+                     <FilterX className="w-4 h-4 text-blue-500" /> Filter Rules (By Condition)
+                   </h3>
+                   <button onClick={addRule} className="text-xs flex items-center gap-1 text-blue-600 font-semibold hover:bg-blue-50 px-2 py-1 rounded transition-colors">
+                      <Plus className="w-3 h-3" /> Add Rule
+                   </button>
+                 </div>
+                 
+                 {tableRules.length === 0 ? (
+                   <p className="text-xs text-slate-400 italic">No custom rules applied. Click "Add Rule" to filter your table rows based on ANY field.</p>
+                 ) : (
+                   <div className="space-y-2 mt-3 bg-slate-50 p-3 rounded-lg border border-slate-200">
+                     {tableRules.map((rule) => (
+                        <div key={rule.id} className="flex items-center gap-2 text-sm flex-wrap">
                               <span className="text-slate-400 font-medium">Where</span>
                               <select 
                                 className="bg-white border border-slate-200 rounded px-2 py-1 outline-none focus:ring-1 focus:ring-blue-500 shadow-sm"
@@ -915,7 +940,7 @@
                                 onChange={(e) => updateRule(rule.id, 'field', e.target.value)}
                               >
                                  <option value="">-- Select Field --</option>
-                                 {REPORT_FIELDS.map(f => (
+                                 {REPORT_FIELDS.filter(f => !f.isCustom).map(f => (
                                    <option key={f.id} value={f.id}>{f.label}</option>
                                  ))}
                               </select>
@@ -1013,6 +1038,60 @@
                  <span>Showing aggregations based on selected Dimensions and Filter Rules.</span>
                  <span>Total Rows: {sortedConsoleData.length}</span>
                </div>
+            )}
+
+            {/* BAR CHART SECTION */}
+            {consoleFields.length > 0 && sortedConsoleData.length > 0 && (
+              <div className="p-4 bg-white border-t border-slate-200">
+                <button onClick={() => setShowChart(!showChart)} className="flex items-center gap-2 text-sm font-bold text-slate-700 hover:text-indigo-600 transition-colors">
+                   <BarChart3 className="w-4 h-4" /> {showChart ? 'Hide Dynamic Bar Chart' : 'Show Dynamic Bar Chart'}
+                </button>
+                
+                {showChart && (
+                   <div className="mt-6">
+                      {(() => {
+                         const chartMetric = consoleFields.find(f => f.type === 'metric');
+                         const chartDim = consoleFields.find(f => f.type === 'dimension');
+                         
+                         if (!chartMetric) return <p className="text-sm text-slate-500 italic mt-2">Please add at least one metric to the console to visualize data.</p>;
+                         
+                         // Limit to top 30 for visualization layout safety
+                         const chartData = sortedConsoleData.slice(0, 30);
+                         const maxVal = Math.max(...chartData.map(d => Number(d[chartMetric.id]) || 0));
+                         
+                         return (
+                           <div className="flex flex-col gap-2">
+                             <h4 className="text-xs font-bold text-slate-500 uppercase tracking-widest mb-2 flex justify-between">
+                               <span>{REPORT_FIELDS.find(f => f.id === chartMetric.id)?.label || chartMetric.label} by {chartDim ? (REPORT_FIELDS.find(f => f.id === chartDim.id)?.label || chartDim.label) : 'Grand Total'} {sortedConsoleData.length > 30 ? '(Top 30)' : ''}</span>
+                               {sortedConsoleData.length > 30 && <span className="text-amber-500">Limited to 30 items for visualization</span>}
+                             </h4>
+                             <div className="flex items-end gap-2 h-64 bg-slate-50 border border-slate-100 rounded-lg px-4 pt-4 pb-8 overflow-x-auto relative shadow-inner">
+                               {chartData.map((row, i) => {
+                                 const val = Number(row[chartMetric.id]) || 0;
+                                 const hPct = maxVal > 0 ? (val / maxVal) * 100 : 0;
+                                 const label = chartDim ? (row[chartDim.id] || 'N/A') : 'Total';
+                                 return (
+                                   <div key={i} className="flex flex-col items-center justify-end flex-shrink-0 w-16 group relative h-full">
+                                     <div className="absolute bottom-full mb-1 opacity-0 group-hover:opacity-100 text-[10px] bg-slate-800 text-white px-2 py-1 rounded whitespace-nowrap z-10 pointer-events-none transition-opacity">
+                                       {formatValue(val, chartMetric.format)}
+                                     </div>
+                                     <div 
+                                       className="w-full bg-indigo-400 hover:bg-indigo-500 transition-colors rounded-t-sm" 
+                                       style={{ height: `${Math.max(hPct, 1)}%` }}
+                                     ></div>
+                                     <div className="absolute top-full mt-2 w-full flex justify-center">
+                                        <span className="text-[10px] text-slate-600 w-full truncate text-center block px-1" title={label}>{label}</span>
+                                     </div>
+                                   </div>
+                                 );
+                               })}
+                             </div>
+                           </div>
+                         );
+                      })()}
+                   </div>
+                )}
+              </div>
             )}
           </section>
         </div>
@@ -1185,7 +1264,247 @@
     }
 
     // ------------------------------------------------------------------------------------
-    // PAGE 3: SETTINGS COMPONENT (MTD% Highlight Colors)
+    // PAGE 3: TARGET COMMITMENT COMPONENT
+    // ------------------------------------------------------------------------------------
+    function TargetCommitment({ rawData, todayInfo, hlSettings, runRate }) {
+      const [filterBrand, setFilterBrand] = useState('All');
+      const [filterCenter, setFilterCenter] = useState('All');
+      const [commitments, setCommitments] = useState({});
+      
+      const defaultWd = todayInfo?.workingDay?.mtd !== '?' ? Number(todayInfo?.workingDay?.mtd) : 1;
+      const [designatedWd, setDesignatedWd] = useState(defaultWd);
+      const [designatedEndWd, setDesignatedEndWd] = useState(defaultWd + 2);
+      const [showTherapists, setShowTherapists] = useState(true);
+
+      const availableCenters = useMemo(() => getUniqueValues(rawData.filter(d => filterBrand === 'All' || d.brand === filterBrand), 'center'), [rawData, filterBrand]);
+
+      const fmDays = todayInfo?.workingDay?.fullMonth !== '?' ? Number(todayInfo?.workingDay?.fullMonth) : 30;
+
+      const handleExpectedChange = (row, valStr) => {
+         if (valStr === '') {
+            setCommitments(prev => ({ ...prev, [row.id]: { expMtd: '', d1: '', d2: '' } }));
+            return;
+         }
+         const val = parseFloat(valStr);
+         if (isNaN(val)) return;
+
+         const dailyFm = fmDays > 0 ? row.fmTarget / fmDays : 0;
+         const targetBase = dailyFm * designatedEndWd;
+         const requiredTotal = (val / 100) * targetBase;
+         const needed = requiredTotal - row.actualSalesMtd;
+         const half = needed > 0 ? needed / 2 : 0;
+         
+         setCommitments(prev => ({
+            ...prev,
+            [row.id]: { expMtd: valStr, d1: half.toFixed(0), d2: half.toFixed(0) }
+         }));
+      };
+
+      const handleDayChange = (row, field, valStr) => {
+         setCommitments(prev => {
+            const current = prev[row.id] || { expMtd: '', d1: '', d2: '' };
+            const newD1 = field === 'd1' ? valStr : current.d1;
+            const newD2 = field === 'd2' ? valStr : current.d2;
+            
+            const numD1 = parseFloat(newD1) || 0;
+            const numD2 = parseFloat(newD2) || 0;
+            
+            const dailyFm = fmDays > 0 ? row.fmTarget / fmDays : 0;
+            const targetBase = dailyFm * designatedEndWd;
+            const newExp = targetBase > 0 ? ((row.actualSalesMtd + numD1 + numD2) / targetBase) * 100 : 0;
+            
+            return {
+               ...prev,
+               [row.id]: { ...current, [field]: valStr, expMtd: newExp > 0 ? newExp.toFixed(2) : '' }
+            };
+         });
+      };
+
+      const groupedData = useMemo(() => {
+        const validRows = rawData.filter(row => {
+          if (!isValidTherapistRow(row)) return false;
+          if (filterBrand !== 'All' && row.brand !== filterBrand) return false;
+          if (filterCenter !== 'All' && row.center !== filterCenter) return false;
+          return true;
+        });
+
+        const centersMap = new Map();
+        validRows.forEach(row => {
+          if (!centersMap.has(row.center)) {
+             centersMap.set(row.center, { center: row.center, brand: row.brand, therapists: [] });
+          }
+          centersMap.get(row.center).therapists.push(row);
+        });
+
+        return Array.from(centersMap.values()).map(group => {
+           const centerTotalRow = rawData.find(r => r.center.toLowerCase() === group.center.toLowerCase() && r.therapist.toLowerCase() === 'total');
+           
+           let cActualMtd = centerTotalRow ? centerTotalRow.actualSalesMtd : group.therapists.reduce((s, r) => s + r.actualSalesMtd, 0);
+           let cMtdTarget = centerTotalRow ? centerTotalRow.mtdTarget : group.therapists.reduce((s, r) => s + r.mtdTarget, 0);
+           let cFmTarget = centerTotalRow ? centerTotalRow.fmTarget : group.therapists.reduce((s, r) => s + r.fmTarget, 0);
+           let cD1Sales = centerTotalRow ? centerTotalRow.t1Sales : group.therapists.reduce((s, r) => s + (r.t1Sales || 0), 0);
+           let cD2Sales = centerTotalRow ? centerTotalRow.todaySales : group.therapists.reduce((s, r) => s + (r.todaySales || 0), 0);
+
+           let cD1Target = 0;
+           let cD2Target = 0;
+           
+           group.therapists.forEach(t => {
+              const cmt = commitments[t.id] || {};
+              cD1Target += parseFloat(cmt.d1) || 0;
+              cD2Target += parseFloat(cmt.d2) || 0;
+           });
+
+           const dailyFm = fmDays > 0 ? cFmTarget / fmDays : 0;
+           const targetBase = dailyFm * designatedEndWd;
+           const cExpMtd = targetBase > 0 ? ((cActualMtd + cD1Target + cD2Target) / targetBase) * 100 : 0;
+
+           return {
+              ...group,
+              cActualMtd, cMtdTarget, cFmTarget, cD1Sales, cD2Sales, cD1Target, cD2Target, cExpMtd
+           };
+        });
+      }, [rawData, filterBrand, filterCenter, commitments, fmDays, designatedEndWd]);
+
+      return (
+        <div className="space-y-6 animate-in fade-in duration-300">
+          <section className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
+            <div className="p-5 border-b border-slate-200 bg-slate-50 flex items-center justify-between">
+              <div className="flex items-center gap-2 text-slate-700 font-semibold">
+                <Target className="w-5 h-5 text-rose-500" />
+                <h2>Daily Target Commitments</h2>
+              </div>
+            </div>
+            
+            <div className="p-5 border-b border-slate-200 flex flex-col xl:flex-row gap-4 justify-between xl:items-center">
+              <div className="flex flex-wrap gap-4 items-center">
+                <select className="bg-white border border-slate-200 rounded-lg px-3 py-2 outline-none focus:ring-2 focus:ring-rose-500 shadow-sm text-sm" value={filterBrand} onChange={(e) => { setFilterBrand(e.target.value); setFilterCenter('All'); }}>
+                  <option value="All">All Brands</option>
+                  {getUniqueValues(rawData, 'brand').map(b => <option key={b} value={b} className="capitalize">{b}</option>)}
+                </select>
+                <select className="bg-white border border-slate-200 rounded-lg px-3 py-2 outline-none focus:ring-2 focus:ring-rose-500 shadow-sm disabled:opacity-50 text-sm" value={filterCenter} onChange={(e) => setFilterCenter(e.target.value)} disabled={availableCenters.length === 0}>
+                  <option value="All">All Centers</option>
+                  {availableCenters.map(f => <option key={f} value={f}>{f}</option>)}
+                </select>
+                
+                <div className="hidden sm:block w-px h-6 bg-slate-300"></div>
+
+                <div className="flex items-center gap-2 bg-white border border-slate-200 px-3 py-1.5 rounded-lg text-sm shadow-sm">
+                  <label className="font-semibold text-slate-700">Designated WD:</label>
+                  <input type="number" className="w-12 outline-none text-center bg-slate-50 border border-slate-200 rounded font-bold focus:ring-2 focus:ring-rose-500" value={designatedWd} onChange={e => setDesignatedWd(Number(e.target.value))} />
+                </div>
+                <div className="flex items-center gap-2 bg-white border border-slate-200 px-3 py-1.5 rounded-lg text-sm shadow-sm">
+                  <label className="font-semibold text-slate-700">End WD:</label>
+                  <input type="number" className="w-12 outline-none text-center bg-slate-50 border border-slate-200 rounded font-bold focus:ring-2 focus:ring-rose-500" value={designatedEndWd} onChange={e => setDesignatedEndWd(Number(e.target.value))} />
+                </div>
+
+                <div className="hidden sm:block w-px h-6 bg-slate-300"></div>
+
+                <label className="flex items-center gap-2 text-sm font-semibold text-slate-700 cursor-pointer select-none">
+                  <input type="checkbox" className="w-4 h-4 rounded text-rose-500 focus:ring-rose-500 focus:ring-2 border-slate-300 cursor-pointer" checked={showTherapists} onChange={e => setShowTherapists(e.target.checked)} />
+                  Show Therapist Details
+                </label>
+              </div>
+            </div>
+
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-sm text-slate-600 whitespace-nowrap">
+                <thead className="bg-slate-100 text-slate-600 uppercase text-[10px] font-bold border-b border-slate-200">
+                  <tr>
+                    <th className="px-3 py-3">Brand</th>
+                    <th className="px-3 py-3">Center</th>
+                    <th className="px-3 py-3 text-center">PIC</th>
+                    <th className="px-3 py-3">Therapist</th>
+                    <th className="px-3 py-3">Position</th>
+                    <th className="px-3 py-3 text-center" title="Sales | MTD Target | FM Target">Sales <span className="opacity-30">|</span> MTD Target <span className="opacity-30">|</span> FM Target</th>
+                    <th className="px-3 py-3 text-right">Remaining</th>
+                    <th className="px-3 py-3 text-center bg-blue-100/50">Exp. MTD%</th>
+                    <th className="px-3 py-3 text-center bg-indigo-100/50">Day 1 Target</th>
+                    <th className="px-3 py-3 text-right">Day 1 Sales</th>
+                    <th className="px-3 py-3 text-right border-r border-slate-200">D1 Fulfill%</th>
+                    <th className="px-3 py-3 text-center bg-indigo-100/50">Day 2 Target</th>
+                    <th className="px-3 py-3 text-right">Day 2 Sales</th>
+                    <th className="px-3 py-3 text-right">D2 Fulfill%</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {groupedData.length === 0 ? (
+                    <tr><td colSpan="14" className="px-5 py-8 text-center text-slate-500">No therapists found for this filter.</td></tr>
+                  ) : (
+                    groupedData.map((group, gIdx) => (
+                      <React.Fragment key={`group-${gIdx}`}>
+                        {/* Center Summary Row */}
+                        <tr className="bg-slate-50/80 font-bold text-slate-800 border-t-2 border-slate-200">
+                          <td className="px-3 py-3">{group.brand}</td>
+                          <td className="px-3 py-3 text-rose-600">{group.center}</td>
+                          <td className="px-3 py-3 text-center">-</td>
+                          <td className="px-3 py-3 uppercase text-[11px] tracking-wider text-slate-500">Center Total</td>
+                          <td className="px-3 py-3">-</td>
+                          <td className="px-3 py-3 text-center">{formatShortNum(group.cActualMtd, '$')} <span className="opacity-30">|</span> {formatShortNum(group.cMtdTarget, '$')} <span className="opacity-30">|</span> {formatShortNum(group.cFmTarget, '$')}</td>
+                          <td className="px-3 py-3 text-right">{formatValue(Math.max(0, group.cFmTarget - group.cActualMtd), 'currency')}</td>
+                          <td className="px-3 py-3 text-center text-blue-700 bg-blue-50" style={getHighlightStyle(group.cExpMtd, runRate, hlSettings)}>{group.cExpMtd.toFixed(1)}%</td>
+                          <td className="px-3 py-3 text-center text-indigo-700 bg-indigo-50">{formatValue(group.cD1Target, 'currency')}</td>
+                          <td className="px-3 py-3 text-right">{formatValue(group.cD1Sales, 'currency')}</td>
+                          <td className="px-3 py-3 text-right border-r border-slate-200" style={group.cD1Target > 0 ? {color: (group.cD1Sales/group.cD1Target)>=1 ? '#16a34a' : '#dc2626'} : {}}>{group.cD1Target > 0 ? ((group.cD1Sales / group.cD1Target)*100).toFixed(1) + '%' : '-'}</td>
+                          <td className="px-3 py-3 text-center text-indigo-700 bg-indigo-50">{formatValue(group.cD2Target, 'currency')}</td>
+                          <td className="px-3 py-3 text-right">{formatValue(group.cD2Sales, 'currency')}</td>
+                          <td className="px-3 py-3 text-right" style={group.cD2Target > 0 ? {color: (group.cD2Sales/group.cD2Target)>=1 ? '#16a34a' : '#dc2626'} : {}}>{group.cD2Target > 0 ? ((group.cD2Sales / group.cD2Target)*100).toFixed(1) + '%' : '-'}</td>
+                        </tr>
+                        
+                        {/* Therapist Rows */}
+                        {showTherapists && group.therapists.map(t => {
+                           const cmt = commitments[t.id] || { expMtd: '', d1: '', d2: '' };
+                           const d1Val = parseFloat(cmt.d1) || 0;
+                           const d2Val = parseFloat(cmt.d2) || 0;
+                           const d1Sales = t.t1Sales || 0;
+                           const d2Sales = t.todaySales || 0;
+                           
+                           return (
+                             <tr key={t.id} className="bg-white hover:bg-slate-50 transition-colors">
+                               <td className="px-3 py-2 text-slate-400 text-xs">{t.brand}</td>
+                               <td className="px-3 py-2 text-slate-400 text-xs">{t.center}</td>
+                               <td className="px-3 py-2 text-center text-slate-400">-</td>
+                               <td className="px-3 py-2 font-medium text-slate-700">{t.therapist}</td>
+                               <td className="px-3 py-2 text-[11px] text-slate-500">{t.position}</td>
+                               <td className="px-3 py-2 text-center text-slate-500">{formatShortNum(t.actualSalesMtd, '$')} <span className="opacity-30">|</span> {formatShortNum(t.mtdTarget, '$')} <span className="opacity-30">|</span> {formatShortNum(t.fmTarget, '$')}</td>
+                               <td className="px-3 py-2 text-right">{formatValue(Math.max(0, t.fmTarget - t.actualSalesMtd), 'currency')}</td>
+                               <td className="px-2 py-1 text-center bg-blue-50/30">
+                                  <div className="relative flex items-center justify-center">
+                                    <input type="number" className="w-16 pl-1 pr-4 py-1 text-center text-xs font-bold border border-slate-300 rounded focus:ring-2 focus:ring-blue-500 text-blue-700 outline-none" value={cmt.expMtd} onChange={(e) => handleExpectedChange(t, e.target.value)} />
+                                    <span className="absolute right-[0.35rem] text-[10px] font-bold text-blue-400 pointer-events-none">%</span>
+                                  </div>
+                               </td>
+                               <td className="px-2 py-1 text-center bg-indigo-50/30">
+                                  <div className="relative flex items-center justify-center">
+                                    <span className="absolute left-[0.35rem] text-[10px] font-bold text-indigo-400 pointer-events-none">$</span>
+                                    <input type="number" className="w-20 pl-3 pr-1 py-1 text-center text-xs font-bold border border-slate-300 rounded focus:ring-2 focus:ring-indigo-500 text-indigo-700 outline-none" value={cmt.d1} onChange={(e) => handleDayChange(t, 'd1', e.target.value)} />
+                                  </div>
+                               </td>
+                               <td className="px-3 py-2 text-right">{formatValue(d1Sales, 'currency')}</td>
+                               <td className="px-3 py-2 text-right font-bold text-xs border-r border-slate-100" style={d1Val > 0 ? {color: (d1Sales/d1Val)>=1 ? '#16a34a' : '#dc2626'} : {}}>{d1Val > 0 ? ((d1Sales / d1Val)*100).toFixed(1) + '%' : '-'}</td>
+                               <td className="px-2 py-1 text-center bg-indigo-50/30">
+                                  <div className="relative flex items-center justify-center">
+                                    <span className="absolute left-[0.35rem] text-[10px] font-bold text-indigo-400 pointer-events-none">$</span>
+                                    <input type="number" className="w-20 pl-3 pr-1 py-1 text-center text-xs font-bold border border-slate-300 rounded focus:ring-2 focus:ring-indigo-500 text-indigo-700 outline-none" value={cmt.d2} onChange={(e) => handleDayChange(t, 'd2', e.target.value)} />
+                                  </div>
+                               </td>
+                               <td className="px-3 py-2 text-right">{formatValue(d2Sales, 'currency')}</td>
+                               <td className="px-3 py-2 text-right font-bold text-xs" style={d2Val > 0 ? {color: (d2Sales/d2Val)>=1 ? '#16a34a' : '#dc2626'} : {}}>{d2Val > 0 ? ((d2Sales / d2Val)*100).toFixed(1) + '%' : '-'}</td>
+                             </tr>
+                           )
+                        })}
+                      </React.Fragment>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </section>
+        </div>
+      );
+    }
+
+    // ------------------------------------------------------------------------------------
+    // PAGE 4: SETTINGS COMPONENT (MTD% Highlight Colors)
     // ------------------------------------------------------------------------------------
     function SettingsOverview({ hlSettings, setHlSettings }) {
       
@@ -1207,7 +1526,7 @@
             <div className="p-6 text-sm text-slate-600">
                <p className="mb-6 bg-blue-50 p-4 rounded-lg border border-blue-100 text-blue-800">
                  Customize the colors for MTD% metrics across the dashboard. These rules evaluate in order from top to bottom. If a cell matches a higher rule, it stops checking. <br/><br/>
-                 <strong>Run Rate</strong> is calculated dynamically as <code className="bg-white px-1 py-0.5 rounded shadow-sm text-blue-600">Current WD / Total WD</code>.
+                 <strong>Run Rate</strong> is calculated dynamically as <code className="bg-white px-1 py-0.5 rounded shadow-sm text-blue-600">Total WD / Current WD</code>.
                </p>
 
                <div className="space-y-4">
@@ -1249,8 +1568,9 @@
                      <span className="font-bold text-slate-700 w-16">Rule 3:</span>
                      <span className="font-medium">If MTD% is</span>
                      <span className="font-bold">&ge;</span>
-                     <input type="number" value={hlSettings.rule3.value} onChange={(e) => updateSetting('rule3', 'value', Number(e.target.value))} className="w-20 px-2 py-1 outline-none text-center font-bold rounded border border-slate-300 focus:border-blue-500" />
-                     <span className="font-bold">%</span>
+                     <span className="bg-slate-200 px-2 py-1 rounded text-slate-700">Run Rate</span>
+                     <span>&times;</span>
+                     <input type="number" step="0.1" value={hlSettings.rule3.multiplier} onChange={(e) => updateSetting('rule3', 'multiplier', Number(e.target.value))} className="w-20 px-2 py-1 outline-none text-center font-bold rounded border border-slate-300 focus:border-blue-500" />
                    </div>
                    <div className="flex items-center gap-2">
                      <label className="font-medium text-slate-500">Color:</label>
@@ -1264,9 +1584,8 @@
                      <span className="font-bold text-slate-700 w-16">Rule 4:</span>
                      <span className="font-medium">If MTD% is</span>
                      <span className="font-bold">&ge;</span>
-                     <span className="bg-slate-200 px-2 py-1 rounded text-slate-700">Run Rate</span>
-                     <span>&times;</span>
-                     <input type="number" step="0.1" value={hlSettings.rule4.multiplier} onChange={(e) => updateSetting('rule4', 'multiplier', Number(e.target.value))} className="w-20 px-2 py-1 outline-none text-center font-bold rounded border border-slate-300 focus:border-blue-500" />
+                     <input type="number" value={hlSettings.rule4.value} onChange={(e) => updateSetting('rule4', 'value', Number(e.target.value))} className="w-20 px-2 py-1 outline-none text-center font-bold rounded border border-slate-300 focus:border-blue-500" />
+                     <span className="font-bold">%</span>
                    </div>
                    <div className="flex items-center gap-2">
                      <label className="font-medium text-slate-500">Color:</label>
@@ -1321,20 +1640,20 @@
       const [todayInfo, setTodayInfo] = useState({ display: '', workingDay: { mtd: '?', fullMonth: '?' }, isBeforeNoon: false });
       const workingDayMapRef = useRef({});
 
-      // Settings State for Dynamic Highlighting
+      // Settings State for Dynamic Highlighting updated to sensible top-down cascade logical order
       const [highlightSettings, setHighlightSettings] = useState({
         rule1: { multiplier: 2, color: '#6b21a8' }, // Dark Purple
         rule2: { multiplier: 1.5, color: '#c084fc' }, // Light Purple
-        rule3: { value: 100, color: '#16a34a' }, // Deep Neon Green
-        rule4: { multiplier: 1, color: '#2563eb' }, // Blue
+        rule3: { multiplier: 1, color: '#2563eb' }, // Blue
+        rule4: { value: 100, color: '#16a34a' }, // Deep Neon Green
         rule5: { value: 90, color: '#eab308' }, // Yellow
         rule6: { color: '#dc2626' } // Red
       });
 
-      // Calculate the explicit run rate globally to pass down
+      // User defines run rate as Target Extrapolation (Total WD / Current WD) eg. 26/15 = 173%
       const mtdDay = todayInfo?.workingDay?.mtd !== '?' ? Number(todayInfo?.workingDay?.mtd) : 1;
       const fmDay = todayInfo?.workingDay?.fullMonth !== '?' ? Number(todayInfo?.workingDay?.fullMonth) : 1;
-      const globalRunRate = (mtdDay / fmDay) * 100;
+      const globalRunRate = mtdDay > 0 ? (fmDay / mtdDay) * 100 : 100;
 
       const formatRefreshTime = () => {
         const d = new Date();
@@ -1415,6 +1734,9 @@
               <button onClick={() => setActiveTab('cat12')} className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg transition-colors text-sm font-medium ${activeTab === 'cat12' ? 'bg-blue-600 text-white' : 'hover:bg-slate-800 hover:text-white'}`}>
                 <FileText className="w-4 h-4" /> CAT 1/2
               </button>
+              <button onClick={() => setActiveTab('target')} className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg transition-colors text-sm font-medium ${activeTab === 'target' ? 'bg-blue-600 text-white' : 'hover:bg-slate-800 hover:text-white'}`}>
+                <Target className="w-4 h-4" /> Target Commitment
+              </button>
               <div className="my-2 border-t border-slate-800 pt-2"></div>
               <button onClick={() => setActiveTab('settings')} className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg transition-colors text-sm font-medium ${activeTab === 'settings' ? 'bg-blue-600 text-white' : 'hover:bg-slate-800 hover:text-white'}`}>
                 <Settings className="w-4 h-4" /> Settings
@@ -1427,7 +1749,7 @@
             
             <header className="h-16 bg-white border-b border-slate-200 flex items-center justify-between px-8 flex-shrink-0 z-10 shadow-sm">
               <h2 className="text-xl font-bold text-slate-800 tracking-tight">
-                {activeTab === 'sales' ? 'HK Autosync Commit. Tracker' : activeTab === 'cat12' ? 'CAT 1/2 Tracker' : 'System Settings'}
+                {activeTab === 'sales' ? 'HK Autosync Commit. Tracker' : activeTab === 'cat12' ? 'CAT 1/2 Tracker' : activeTab === 'target' ? 'Target Commitment' : 'System Settings'}
               </h2>
               
               <div className="flex flex-col items-end justify-center">
@@ -1473,6 +1795,7 @@
               ) : (
                 activeTab === 'sales' ? <SalesOverview rawData={data} todayInfo={todayInfo} hlSettings={highlightSettings} runRate={globalRunRate} /> : 
                 activeTab === 'cat12' ? <Cat12Overview rawData={data} hlSettings={highlightSettings} runRate={globalRunRate} /> :
+                activeTab === 'target' ? <TargetCommitment rawData={data} todayInfo={todayInfo} hlSettings={highlightSettings} runRate={globalRunRate} /> :
                 <SettingsOverview hlSettings={highlightSettings} setHlSettings={setHighlightSettings} />
               )}
             </main>
