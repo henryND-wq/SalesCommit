@@ -1,8 +1,8 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <link rel="icon" type="image/png" href="favicon.png">
   <meta charset="UTF-8">
+  <link rel="icon" type="image/png" href="favicon.png">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>HK Autosync Commitment Tracker</title>
   
@@ -35,8 +35,44 @@
       Upload, RefreshCw, ChevronDown, ChevronUp, Clock, ArrowUpDown, FilterX, Settings, Palette, Download
     } from 'lucide-react';
 
+    // --- TRUE DATE TIMESTAMP ENGINE (Converts any date string into a pure integer for flawless matching) ---
+    const getDateTimestamp = (str) => {
+        if (!str) return null;
+        let s = String(str).split(' ')[0].trim(); 
+        const parts = s.split(/[-/]/);
+        if (parts.length !== 3) return null;
+        
+        let y, m, d;
+        if (parts[0].length === 4) { // YYYY-MM-DD
+            y = parseInt(parts[0], 10);
+            m = parseInt(parts[1], 10);
+            d = parseInt(parts[2], 10);
+        } else if (parts[2].length === 4) { // MM/DD/YYYY or DD/MM/YYYY
+            y = parseInt(parts[2], 10);
+            let p0 = parseInt(parts[0], 10);
+            let p1 = parseInt(parts[1], 10);
+            if (p0 > 12) { d = p0; m = p1; } else { m = p0; d = p1; }
+        } else { // MM/DD/YY
+            let p0 = parseInt(parts[0], 10);
+            let p1 = parseInt(parts[1], 10);
+            let p2 = parseInt(parts[2], 10);
+            y = p2 < 100 ? (p2 < 50 ? 2000 + p2 : 1900 + p2) : p2;
+            if (p0 > 12) { d = p0; m = p1; } else { m = p0; d = p1; }
+        }
+        
+        if (isNaN(y) || isNaN(m) || isNaN(d)) return null;
+        return Date.UTC(y, m - 1, d); // Returns a pure integer (e.g. 1762819200000)
+    };
+
+    // Formats the pure integer timestamp back into the requested display string
+    const formatTimestampToDisplay = (ts) => {
+        if (!ts) return '';
+        const d = new Date(ts);
+        return `${d.getUTCMonth() + 1}/${d.getUTCDate()}/${d.getUTCFullYear()} 15:00:00`;
+    };
+
     // --- DYNAMIC WORKING DAY LOGIC (12 PM HKT Rollover) ---
-    const getTodayInfo = (workingDayMap = {}) => {
+    const getTodayInfo = (workingDayMap = { dates: {}, wdToDate: {} }) => {
       const hkTimeStr = new Date().toLocaleString("en-US", { timeZone: "Asia/Hong_Kong" });
       const hkTime = new Date(hkTimeStr);
       
@@ -52,62 +88,39 @@
       const bizDd = String(businessTime.getDate()).padStart(2, '0');
       
       const displayDate = `${bizDd}/${bizMm}`;
-      const lookupDate = `${bizYyyy}-${bizMm}-${bizDd}`;
-
-      const workingDay = workingDayMap[lookupDate] || { mtd: '?', fullMonth: '?' };
+      
+      const ts = Date.UTC(bizYyyy, parseInt(bizMm, 10) - 1, parseInt(bizDd, 10));
+      const workingDay = workingDayMap.dates?.[ts] || { mtd: '?', fullMonth: '?' };
       
       return { display: displayDate, workingDay, isBeforeNoon };
     };
 
     const parseWorkingDays = (csvText) => {
       const lines = csvText.split('\n');
-      const map = {};
+      const map = { dates: {}, wdToDate: {} };
       for (let i = 1; i < lines.length; i++) {
         const line = lines[i].trim();
         if (!line) continue;
         const row = line.split(/,(?=(?:(?:[^"]*"){2})*[^"]*$)/);
         if (row.length >= 3) {
           let dateStr = row[0].replace(/"/g, '').trim();
-          dateStr = dateStr.split(' ')[0]; 
+          const ts = getDateTimestamp(dateStr);
           
-          const d = new Date(dateStr);
-          if (!isNaN(d.getTime())) {
-              const yyyy = d.getFullYear();
-              const mm = String(d.getMonth() + 1).padStart(2, '0');
-              const dd = String(d.getDate()).padStart(2, '0');
-              const formattedDate = `${yyyy}-${mm}-${dd}`;
-              
+          if (ts) {
               const mtd = parseInt(row[1].replace(/"/g, '').trim(), 10);
               const fm = parseInt(row[2].replace(/"/g, '').trim(), 10);
-              map[formattedDate] = { mtd, fullMonth: fm };
+              map.dates[ts] = { mtd, fullMonth: fm };
+              
+              if (!map.wdToDate[mtd]) {
+                 map.wdToDate[mtd] = ts;
+              }
           }
         }
       }
       return map;
     };
 
-    // --- DATA CLEANING HELPERS ---
-    const cleanNum = (val) => {
-      if (val === undefined || val === null) return 0;
-      const str = String(val).replace(/[^0-9.-]+/g, '');
-      const num = parseFloat(str);
-      return isNaN(num) ? 0 : num;
-    };
-
-    const isValidTherapistRow = (row) => {
-      const t = (row.therapist || '').toLowerCase().trim();
-      return t !== 'total' && t !== 'aggregate' && t !== '';
-    };
-
-    const getUniqueValues = (data, field) => {
-      return [...new Set(data.filter(isValidTherapistRow).map(d => d[field]))].filter(val => {
-        const v = (val || '').toLowerCase();
-        return v !== 'total' && v !== 'aggregate' && v !== 'all' && v !== 'other centers';
-      });
-    };
-
-    // --- ROBUST SALES CSV PARSER ---
-    const parseCSV = (csvText) => {
+    const parseCSVTo2DArray = (csvText) => {
       const lines = [];
       let currentLine = [];
       let currentField = '';
@@ -141,7 +154,110 @@
       if (currentLine.length > 0) {
         lines.push(currentLine);
       }
+      return lines;
+    };
 
+    const parseMtdRaw = (csvText) => {
+      const lines = parseCSVTo2DArray(csvText);
+      if (lines.length < 4) return {};
+
+      // Auto-detect the metrics row accurately
+      let metricRowIdx = 1; 
+      let headerRowIdx = 2;
+      let dateRowIdx = 0;
+
+      for (let i = 0; i < Math.min(10, lines.length); i++) {
+         const rowStr = lines[i].join('').toLowerCase();
+         if (rowStr.includes('actual sales (daily)') || rowStr.includes('actual sales (mtd)')) {
+             metricRowIdx = i;
+         }
+         if (rowStr.includes('brand') && rowStr.includes('therapist')) {
+             headerRowIdx = i;
+         }
+      }
+      
+      dateRowIdx = Math.max(0, metricRowIdx - 1);
+      const dataStartIdx = Math.max(metricRowIdx, headerRowIdx, dateRowIdx) + 1;
+
+      const dateRow = lines[dateRowIdx].map(c => c.replace(/"/g, '').trim());
+      const metricRow = lines[metricRowIdx].map(c => c.replace(/"/g, '').trim().toLowerCase());
+      const headers = lines[headerRowIdx] ? lines[headerRowIdx].map(c => c.replace(/"/g, '').trim().toLowerCase()) : [];
+      
+      let brandIdx = headers.findIndex(h => h.includes('brand'));
+      let centerIdx = headers.findIndex(h => h.includes('center'));
+      let therapistIdx = headers.findIndex(h => h.includes('therapist'));
+
+      if (brandIdx === -1) brandIdx = 0;
+      if (centerIdx === -1) centerIdx = 2;
+      if (therapistIdx === -1) therapistIdx = 3;
+
+      let lastDateTs = null;
+      for (let i = 0; i < dateRow.length; i++) {
+        const rawDate = dateRow[i];
+        const ts = getDateTimestamp(rawDate);
+        if (ts) {
+           lastDateTs = ts;
+           dateRow[i] = lastDateTs;
+        } else if (lastDateTs !== null) {
+           dateRow[i] = lastDateTs;
+        }
+      }
+
+      const mtdMap = {};
+      for (let i = dataStartIdx; i < lines.length; i++) {
+         const row = lines[i];
+         if (!row || row.length <= therapistIdx) continue;
+
+         const brand = (row[brandIdx] || '').replace(/"/g, '').replace(/\s+/g, ' ').trim().toLowerCase();
+         const center = (row[centerIdx] || '').replace(/"/g, '').replace(/\s+/g, ' ').trim().toLowerCase();
+         const therapist = (row[therapistIdx] || '').replace(/"/g, '').replace(/\s+/g, ' ').trim().toLowerCase();
+
+         if (!brand && !center && !therapist) continue;
+
+         const key = `${brand}|${center}|${therapist}`;
+         if (!mtdMap[key]) mtdMap[key] = {};
+
+         for (let j = 0; j < row.length; j++) {
+            const metric = metricRow[j] || '';
+            const ts = dateRow[j]; // Pure mathematical integer Timestamp
+            
+            if (ts) {
+               if (metric.includes('daily') && metric.includes('sales')) {
+                   if (!mtdMap[key][ts]) mtdMap[key][ts] = {};
+                   mtdMap[key][ts].daily = cleanNum(row[j]);
+               } else if (metric.includes('mtd') && metric.includes('sales')) {
+                   if (!mtdMap[key][ts]) mtdMap[key][ts] = {};
+                   mtdMap[key][ts].mtd = cleanNum(row[j]);
+               }
+            }
+         }
+      }
+      return mtdMap;
+    };
+
+    // --- DATA CLEANING HELPERS ---
+    const cleanNum = (val) => {
+      if (val === undefined || val === null) return 0;
+      const str = String(val).replace(/[^0-9.-]+/g, '');
+      const num = parseFloat(str);
+      return isNaN(num) ? 0 : num;
+    };
+
+    const isValidTherapistRow = (row) => {
+      const t = (row.therapist || '').toLowerCase().trim();
+      return t !== 'total' && t !== 'aggregate' && t !== '';
+    };
+
+    const getUniqueValues = (data, field) => {
+      return [...new Set(data.filter(isValidTherapistRow).map(d => d[field]))].filter(val => {
+        const v = (val || '').toLowerCase();
+        return v !== 'total' && v !== 'aggregate' && v !== 'all' && v !== 'other centers';
+      });
+    };
+
+    // --- ROBUST SALES CSV PARSER ---
+    const parseCSV = (csvText) => {
+      const lines = parseCSVTo2DArray(csvText);
       if (lines.length < 2) return [];
 
       const headers = lines[0].map(h => h.replace(/"/g, '').toLowerCase().trim());
@@ -205,7 +321,6 @@
 
     // Global Highlighting Evaluator
     const getHighlightStyle = (val, runRate, settings) => {
-        // Cascade from highest threshold down to lowest
         if (val >= runRate * settings.rule1.multiplier) return { color: settings.rule1.color, fontWeight: '800' };
         if (val >= runRate * settings.rule2.multiplier) return { color: settings.rule2.color, fontWeight: '800' };
         if (val >= runRate * settings.rule3.multiplier) return { color: settings.rule3.color, fontWeight: '800' };
@@ -230,8 +345,8 @@
       const [mtdThreshold1, setMtdThreshold1] = useState(100);
       const [mtdThreshold2, setMtdThreshold2] = useState(150);
       const [mtdThreshold3, setMtdThreshold3] = useState(200);
-      const [fmTargetThreshold, setFmTargetThreshold] = useState(75000); // Dollar threshold
-      const [salesThreshold, setSalesThreshold] = useState(100000); // Dollar threshold
+      const [fmTargetThreshold, setFmTargetThreshold] = useState(75000); 
+      const [salesThreshold, setSalesThreshold] = useState(100000); 
 
       const [consoleBrand, setConsoleBrand] = useState('All');
       const [consoleCenter, setConsoleCenter] = useState('All');
@@ -1267,7 +1382,7 @@
     // ------------------------------------------------------------------------------------
     // PAGE 3: TARGET COMMITMENT COMPONENT
     // ------------------------------------------------------------------------------------
-    function TargetCommitment({ rawData, todayInfo, hlSettings, runRate }) {
+    function TargetCommitment({ rawData, todayInfo, hlSettings, runRate, wdMap, mtdRawData }) {
       const [filterBrand, setFilterBrand] = useState('All');
       const [filterCenter, setFilterCenter] = useState('All');
       const [commitments, setCommitments] = useState({});
@@ -1277,9 +1392,36 @@
       const [designatedEndWd, setDesignatedEndWd] = useState(defaultWd + 2);
       const [showTherapists, setShowTherapists] = useState(true);
 
-      const availableCenters = useMemo(() => getUniqueValues(rawData.filter(d => filterBrand === 'All' || d.brand === filterBrand), 'center'), [rawData, filterBrand]);
+      // MANUAL OVERRIDE STATES (Allows user to completely bypass map if needed)
+      const [manualD1Date, setManualD1Date] = useState('');
+      const [manualD2Date, setManualD2Date] = useState('');
 
+      const availableCenters = useMemo(() => getUniqueValues(rawData.filter(d => filterBrand === 'All' || d.brand === filterBrand), 'center'), [rawData, filterBrand]);
       const fmDays = todayInfo?.workingDay?.fullMonth !== '?' ? Number(todayInfo?.workingDay?.fullMonth) : 30;
+
+      // Smart Defaults computed from working day map
+      const defaultD1 = useMemo(() => formatTimestampToDisplay(wdMap?.wdToDate?.[designatedWd]), [wdMap, designatedWd]);
+      const defaultD2 = useMemo(() => formatTimestampToDisplay(wdMap?.wdToDate?.[designatedEndWd]), [wdMap, designatedEndWd]);
+
+      // Auto-sync text boxes when WD dropdowns change
+      useEffect(() => { setManualD1Date(defaultD1); }, [defaultD1]);
+      useEffect(() => { setManualD2Date(defaultD2); }, [defaultD2]);
+      
+      // Calculate Dates - Internal engine strictly uses pure Timestamp keys
+      const d1DateInternal = getDateTimestamp(manualD1Date);
+      const d2DateInternal = getDateTimestamp(manualD2Date);
+
+      const d1DateDisplay = manualD1Date !== '' ? manualD1Date : formatTimestampToDisplay(wdMap?.wdToDate?.[designatedWd]);
+      const d2DateDisplay = manualD2Date !== '' ? manualD2Date : formatTimestampToDisplay(wdMap?.wdToDate?.[designatedEndWd]);
+
+      // Safely resolves nested object returns to prioritize Daily sales, then fallback to MTD
+      const getSalesValue = (tKey, dateInternal) => {
+         const entry = mtdRawData[tKey]?.[dateInternal];
+         if (!entry) return 0;
+         if (entry.daily !== undefined) return entry.daily;
+         if (entry.mtd !== undefined) return entry.mtd;
+         return 0;
+      };
 
       const handleExpectedChange = (row, valStr) => {
          if (valStr === '') {
@@ -1343,11 +1485,17 @@
            let cActualMtd = centerTotalRow ? centerTotalRow.actualSalesMtd : group.therapists.reduce((s, r) => s + r.actualSalesMtd, 0);
            let cMtdTarget = centerTotalRow ? centerTotalRow.mtdTarget : group.therapists.reduce((s, r) => s + r.mtdTarget, 0);
            let cFmTarget = centerTotalRow ? centerTotalRow.fmTarget : group.therapists.reduce((s, r) => s + r.fmTarget, 0);
-           let cD1Sales = centerTotalRow ? centerTotalRow.t1Sales : group.therapists.reduce((s, r) => s + (r.t1Sales || 0), 0);
-           let cD2Sales = centerTotalRow ? centerTotalRow.todaySales : group.therapists.reduce((s, r) => s + (r.todaySales || 0), 0);
 
+           let cD1Sales = 0;
+           let cD2Sales = 0;
            let cD1Target = 0;
            let cD2Target = 0;
+
+           const cKey = `${group.brand.replace(/\s+/g, ' ').toLowerCase()}|${group.center.replace(/\s+/g, ' ').toLowerCase()}|total`;
+           
+           // Fetch Center level Sales safely via getSalesValue to unwrap the internal object format
+           cD1Sales = mtdRawData[cKey] ? getSalesValue(cKey, d1DateInternal) : group.therapists.reduce((s, r) => s + getSalesValue(`${r.brand.replace(/\s+/g, ' ').toLowerCase()}|${r.center.replace(/\s+/g, ' ').toLowerCase()}|${r.therapist.replace(/\s+/g, ' ').toLowerCase()}`, d1DateInternal), 0);
+           cD2Sales = mtdRawData[cKey] ? getSalesValue(cKey, d2DateInternal) : group.therapists.reduce((s, r) => s + getSalesValue(`${r.brand.replace(/\s+/g, ' ').toLowerCase()}|${r.center.replace(/\s+/g, ' ').toLowerCase()}|${r.therapist.replace(/\s+/g, ' ').toLowerCase()}`, d2DateInternal), 0);
            
            group.therapists.forEach(t => {
               const cmt = commitments[t.id] || {};
@@ -1364,7 +1512,7 @@
               cActualMtd, cMtdTarget, cFmTarget, cD1Sales, cD2Sales, cD1Target, cD2Target, cExpMtd
            };
         });
-      }, [rawData, filterBrand, filterCenter, commitments, fmDays, designatedEndWd]);
+      }, [rawData, filterBrand, filterCenter, commitments, fmDays, designatedEndWd, mtdRawData, d1DateInternal, d2DateInternal]);
 
       return (
         <div className="space-y-6 animate-in fade-in duration-300">
@@ -1377,37 +1525,62 @@
             </div>
             
             <div className="p-5 border-b border-slate-200 flex flex-col xl:flex-row gap-4 justify-between xl:items-center">
-              <div className="flex flex-wrap gap-4 items-center">
-                <select className="bg-white border border-slate-200 rounded-lg px-3 py-2 outline-none focus:ring-2 focus:ring-rose-500 shadow-sm text-sm" value={filterBrand} onChange={(e) => { setFilterBrand(e.target.value); setFilterCenter('All'); }}>
+              <div className="flex flex-wrap gap-4 items-start">
+                <select className="bg-white border border-slate-200 rounded-lg px-3 py-2 outline-none focus:ring-2 focus:ring-rose-500 shadow-sm text-sm h-10" value={filterBrand} onChange={(e) => { setFilterBrand(e.target.value); setFilterCenter('All'); }}>
                   <option value="All">All Brands</option>
                   {getUniqueValues(rawData, 'brand').map(b => <option key={b} value={b} className="capitalize">{b}</option>)}
                 </select>
-                <select className="bg-white border border-slate-200 rounded-lg px-3 py-2 outline-none focus:ring-2 focus:ring-rose-500 shadow-sm disabled:opacity-50 text-sm" value={filterCenter} onChange={(e) => setFilterCenter(e.target.value)} disabled={availableCenters.length === 0}>
+                <select className="bg-white border border-slate-200 rounded-lg px-3 py-2 outline-none focus:ring-2 focus:ring-rose-500 shadow-sm disabled:opacity-50 text-sm h-10" value={filterCenter} onChange={(e) => setFilterCenter(e.target.value)} disabled={availableCenters.length === 0}>
                   <option value="All">All Centers</option>
                   {availableCenters.map(f => <option key={f} value={f}>{f}</option>)}
                 </select>
                 
-                <div className="hidden sm:block w-px h-6 bg-slate-300"></div>
+                <div className="hidden sm:block w-px h-6 bg-slate-300 mt-2"></div>
 
-                <div className="flex items-center gap-2 bg-white border border-slate-200 px-3 py-1.5 rounded-lg text-sm shadow-sm">
-                  <label className="font-semibold text-slate-700">Designated WD:</label>
-                  <input type="number" className="w-12 outline-none text-center bg-slate-50 border border-slate-200 rounded font-bold focus:ring-2 focus:ring-rose-500" value={designatedWd} onChange={e => setDesignatedWd(Number(e.target.value))} />
+                <div className="flex flex-col items-center">
+                  <div className="flex items-center gap-2 bg-white border border-slate-200 px-3 h-10 rounded-lg text-sm shadow-sm">
+                    <label className="font-semibold text-slate-700">Start WD:</label>
+                    <input type="number" className="w-12 outline-none text-center bg-slate-50 border border-slate-200 rounded font-bold focus:ring-2 focus:ring-rose-500" value={designatedWd} onChange={e => {
+                        setDesignatedWd(Number(e.target.value));
+                    }} />
+                  </div>
+                  <input 
+                      type="text" 
+                      className="text-[10px] font-bold text-slate-600 mt-1.5 w-36 border border-slate-300 bg-white rounded px-1 py-0.5 text-center focus:ring-1 focus:ring-rose-500 outline-none shadow-inner" 
+                      value={manualD1Date} 
+                      onChange={e => setManualD1Date(e.target.value)} 
+                      placeholder="e.g. 11/11/2025 16:00:00"
+                      title="Edit this exact string to manually override the MTD Raw column lookup" 
+                  />
                 </div>
-                <div className="flex items-center gap-2 bg-white border border-slate-200 px-3 py-1.5 rounded-lg text-sm shadow-sm">
-                  <label className="font-semibold text-slate-700">End WD:</label>
-                  <input type="number" className="w-12 outline-none text-center bg-slate-50 border border-slate-200 rounded font-bold focus:ring-2 focus:ring-rose-500" value={designatedEndWd} onChange={e => setDesignatedEndWd(Number(e.target.value))} />
+
+                <div className="flex flex-col items-center">
+                  <div className="flex items-center gap-2 bg-white border border-slate-200 px-3 h-10 rounded-lg text-sm shadow-sm">
+                    <label className="font-semibold text-slate-700">End WD:</label>
+                    <input type="number" className="w-12 outline-none text-center bg-slate-50 border border-slate-200 rounded font-bold focus:ring-2 focus:ring-rose-500" value={designatedEndWd} onChange={e => {
+                        setDesignatedEndWd(Number(e.target.value));
+                    }} />
+                  </div>
+                  <input 
+                      type="text" 
+                      className="text-[10px] font-bold text-slate-600 mt-1.5 w-36 border border-slate-300 bg-white rounded px-1 py-0.5 text-center focus:ring-1 focus:ring-rose-500 outline-none shadow-inner" 
+                      value={manualD2Date} 
+                      onChange={e => setManualD2Date(e.target.value)} 
+                      placeholder="e.g. 11/12/2025 16:00:00"
+                      title="Edit this exact string to manually override the MTD Raw Day 2 column lookup" 
+                  />
                 </div>
 
-                <div className="hidden sm:block w-px h-6 bg-slate-300"></div>
+                <div className="hidden sm:block w-px h-6 bg-slate-300 mt-2"></div>
 
-                <label className="flex items-center gap-2 text-sm font-semibold text-slate-700 cursor-pointer select-none">
+                <label className="flex items-center gap-2 text-sm font-semibold text-slate-700 cursor-pointer select-none mt-2.5">
                   <input type="checkbox" className="w-4 h-4 rounded text-rose-500 focus:ring-rose-500 focus:ring-2 border-slate-300 cursor-pointer" checked={showTherapists} onChange={e => setShowTherapists(e.target.checked)} />
                   Show Therapist Details
                 </label>
               </div>
             </div>
 
-            <div className="overflow-x-auto">
+            <div className="overflow-x-auto pb-10">
               <table className="w-full text-left text-sm text-slate-600 whitespace-nowrap">
                 <thead className="bg-slate-100 text-slate-600 uppercase text-[10px] font-bold border-b border-slate-200">
                   <tr>
@@ -1420,10 +1593,10 @@
                     <th className="px-3 py-3 text-right">Remaining</th>
                     <th className="px-3 py-3 text-center bg-blue-100/50">Exp. MTD%</th>
                     <th className="px-3 py-3 text-center bg-indigo-100/50">Day 1 Target</th>
-                    <th className="px-3 py-3 text-right">Day 1 Sales</th>
+                    <th className="px-3 py-3 text-right leading-tight">Day 1 Sales<br/><span className="text-[9px] text-rose-500 font-bold">{d1DateDisplay || 'N/A'}</span></th>
                     <th className="px-3 py-3 text-right border-r border-slate-200">D1 Fulfill%</th>
                     <th className="px-3 py-3 text-center bg-indigo-100/50">Day 2 Target</th>
-                    <th className="px-3 py-3 text-right">Day 2 Sales</th>
+                    <th className="px-3 py-3 text-right leading-tight">Day 2 Sales<br/><span className="text-[9px] text-rose-500 font-bold">{d2DateDisplay || 'N/A'}</span></th>
                     <th className="px-3 py-3 text-right">D2 Fulfill%</th>
                   </tr>
                 </thead>
@@ -1444,10 +1617,10 @@
                           <td className="px-3 py-3 text-right">{formatValue(Math.max(0, group.cFmTarget - group.cActualMtd), 'currency')}</td>
                           <td className="px-3 py-3 text-center text-blue-700 bg-blue-50" style={getHighlightStyle(group.cExpMtd, runRate, hlSettings)}>{group.cExpMtd.toFixed(1)}%</td>
                           <td className="px-3 py-3 text-center text-indigo-700 bg-indigo-50">{formatValue(group.cD1Target, 'currency')}</td>
-                          <td className="px-3 py-3 text-right">{formatValue(group.cD1Sales, 'currency')}</td>
+                          <td className="px-3 py-3 text-right text-indigo-700">{formatValue(group.cD1Sales, 'currency')}</td>
                           <td className="px-3 py-3 text-right border-r border-slate-200" style={group.cD1Target > 0 ? {color: (group.cD1Sales/group.cD1Target)>=1 ? '#16a34a' : '#dc2626'} : {}}>{group.cD1Target > 0 ? ((group.cD1Sales / group.cD1Target)*100).toFixed(1) + '%' : '-'}</td>
                           <td className="px-3 py-3 text-center text-indigo-700 bg-indigo-50">{formatValue(group.cD2Target, 'currency')}</td>
-                          <td className="px-3 py-3 text-right">{formatValue(group.cD2Sales, 'currency')}</td>
+                          <td className="px-3 py-3 text-right text-indigo-700">{formatValue(group.cD2Sales, 'currency')}</td>
                           <td className="px-3 py-3 text-right" style={group.cD2Target > 0 ? {color: (group.cD2Sales/group.cD2Target)>=1 ? '#16a34a' : '#dc2626'} : {}}>{group.cD2Target > 0 ? ((group.cD2Sales / group.cD2Target)*100).toFixed(1) + '%' : '-'}</td>
                         </tr>
                         
@@ -1456,8 +1629,10 @@
                            const cmt = commitments[t.id] || { expMtd: '', d1: '', d2: '' };
                            const d1Val = parseFloat(cmt.d1) || 0;
                            const d2Val = parseFloat(cmt.d2) || 0;
-                           const d1Sales = t.t1Sales || 0;
-                           const d2Sales = t.todaySales || 0;
+                           
+                           const tKey = `${t.brand.replace(/\s+/g, ' ').toLowerCase()}|${t.center.replace(/\s+/g, ' ').toLowerCase()}|${t.therapist.replace(/\s+/g, ' ').toLowerCase()}`;
+                           const d1Sales = getSalesValue(tKey, d1DateInternal);
+                           const d2Sales = getSalesValue(tKey, d2DateInternal);
                            
                            return (
                              <tr key={t.id} className="bg-white hover:bg-slate-50 transition-colors">
@@ -1480,7 +1655,7 @@
                                     <input type="number" className="w-20 pl-3 pr-1 py-1 text-center text-xs font-bold border border-slate-300 rounded focus:ring-2 focus:ring-indigo-500 text-indigo-700 outline-none" value={cmt.d1} onChange={(e) => handleDayChange(t, 'd1', e.target.value)} />
                                   </div>
                                </td>
-                               <td className="px-3 py-2 text-right">{formatValue(d1Sales, 'currency')}</td>
+                               <td className="px-3 py-2 text-right font-medium text-indigo-900">{formatValue(d1Sales, 'currency')}</td>
                                <td className="px-3 py-2 text-right font-bold text-xs border-r border-slate-100" style={d1Val > 0 ? {color: (d1Sales/d1Val)>=1 ? '#16a34a' : '#dc2626'} : {}}>{d1Val > 0 ? ((d1Sales / d1Val)*100).toFixed(1) + '%' : '-'}</td>
                                <td className="px-2 py-1 text-center bg-indigo-50/30">
                                   <div className="relative flex items-center justify-center">
@@ -1488,7 +1663,7 @@
                                     <input type="number" className="w-20 pl-3 pr-1 py-1 text-center text-xs font-bold border border-slate-300 rounded focus:ring-2 focus:ring-indigo-500 text-indigo-700 outline-none" value={cmt.d2} onChange={(e) => handleDayChange(t, 'd2', e.target.value)} />
                                   </div>
                                </td>
-                               <td className="px-3 py-2 text-right">{formatValue(d2Sales, 'currency')}</td>
+                               <td className="px-3 py-2 text-right font-medium text-indigo-900">{formatValue(d2Sales, 'currency')}</td>
                                <td className="px-3 py-2 text-right font-bold text-xs" style={d2Val > 0 ? {color: (d2Sales/d2Val)>=1 ? '#16a34a' : '#dc2626'} : {}}>{d2Val > 0 ? ((d2Sales / d2Val)*100).toFixed(1) + '%' : '-'}</td>
                              </tr>
                            )
@@ -1632,14 +1807,16 @@
     // MAIN APP COMPONENT WITH SIDEBAR LAYOUT
     // ------------------------------------------------------------------------------------
     function App() {
-      const [activeTab, setActiveTab] = useState('sales');
+      const [activeTab, setActiveTab] = useState('target'); // Default to target for testing
       const [data, setData] = useState([]);
       const [isLoading, setIsLoading] = useState(true);
       const [fetchError, setFetchError] = useState('');
       const [lastRefreshTime, setLastRefreshTime] = useState(null);
       
       const [todayInfo, setTodayInfo] = useState({ display: '', workingDay: { mtd: '?', fullMonth: '?' }, isBeforeNoon: false });
-      const workingDayMapRef = useRef({});
+      const [wdMap, setWdMap] = useState({ dates: {}, wdToDate: {} });
+      const [mtdRawData, setMtdRawData] = useState({});
+      const workingDayMapRef = useRef({ dates: {}, wdToDate: {} });
 
       // Settings State for Dynamic Highlighting updated to sensible top-down cascade logical order
       const [highlightSettings, setHighlightSettings] = useState({
@@ -1668,8 +1845,11 @@
         const SHEET_ID = '1fueysQjwsNx7Xt5vbKwde4ZF9rLBDWyLkVSmuuj2QBo';
         const SALES_SHEET_NAME = 'HK Autosync Commitment';
         const WD_SHEET_NAME = 'HK Working Day';
+        const MTD_RAW_SHEET_NAME = 'MTD Raw';
+        
         const SALES_CSV_URL = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent(SALES_SHEET_NAME)}`;
         const WD_CSV_URL = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent(WD_SHEET_NAME)}`;
+        const MTD_RAW_URL = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent(MTD_RAW_SHEET_NAME)}`;
         
         const fetchAllData = async () => {
           try {
@@ -1677,8 +1857,15 @@
             if (wdRes.ok) {
               const wdText = await wdRes.text();
               const map = parseWorkingDays(wdText);
+              setWdMap(map);
               workingDayMapRef.current = map;
               setTodayInfo(getTodayInfo(map));
+            }
+
+            const mtdRawRes = await fetch(MTD_RAW_URL);
+            if (mtdRawRes.ok) {
+               const mtdText = await mtdRawRes.text();
+               setMtdRawData(parseMtdRaw(mtdText));
             }
 
             const salesRes = await fetch(SALES_CSV_URL);
@@ -1796,7 +1983,7 @@
               ) : (
                 activeTab === 'sales' ? <SalesOverview rawData={data} todayInfo={todayInfo} hlSettings={highlightSettings} runRate={globalRunRate} /> : 
                 activeTab === 'cat12' ? <Cat12Overview rawData={data} hlSettings={highlightSettings} runRate={globalRunRate} /> :
-                activeTab === 'target' ? <TargetCommitment rawData={data} todayInfo={todayInfo} hlSettings={highlightSettings} runRate={globalRunRate} /> :
+                activeTab === 'target' ? <TargetCommitment rawData={data} todayInfo={todayInfo} hlSettings={highlightSettings} runRate={globalRunRate} wdMap={wdMap} mtdRawData={mtdRawData} /> :
                 <SettingsOverview hlSettings={highlightSettings} setHlSettings={setHighlightSettings} />
               )}
             </main>
